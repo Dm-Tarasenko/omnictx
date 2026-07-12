@@ -1,0 +1,21 @@
+# omnictx shell integration (zsh) — eval "$({{.Cmd}} init zsh)"
+if [ -z "${__OMNICTX_ZSH_LOADED:-}" ]; then
+  __OMNICTX_ZSH_LOADED=1
+  __OMNICTX_ORIG_PROMPT="$PROMPT"
+
+  __omnictx_precmd() {
+    local __omnictx_seg
+    __omnictx_seg="$({{.Cmd}} --shell zsh)"
+    if [ -n "$__omnictx_seg" ]; then
+      PROMPT="${__omnictx_seg} ${__OMNICTX_ORIG_PROMPT}"
+    else
+      PROMPT="${__OMNICTX_ORIG_PROMPT}"
+    fi
+  }
+
+  if [[ -z "${precmd_functions[(r)__omnictx_precmd]}" ]]; then
+    precmd_functions+=(__omnictx_precmd)
+  fi
+
+
+fi

@@ -1,0 +1,22 @@
+# omnictx shell integration (bash) — eval "$({{.Cmd}} init bash)"
+if [ -z "${__OMNICTX_BASH_LOADED:-}" ]; then
+  __OMNICTX_BASH_LOADED=1
+  __OMNICTX_ORIG_PS1="$PS1"
+
+  __omnictx_prompt() {
+    local __omnictx_seg
+    __omnictx_seg="$({{.Cmd}} --shell bash)"
+    if [ -n "$__omnictx_seg" ]; then
+      PS1="${__omnictx_seg} ${__OMNICTX_ORIG_PS1}"
+    else
+      PS1="${__OMNICTX_ORIG_PS1}"
+    fi
+  }
+
+  case ";${PROMPT_COMMAND:-};" in
+    *";__omnictx_prompt;"*) ;;
+    *) PROMPT_COMMAND="__omnictx_prompt;${PROMPT_COMMAND:-}" ;;
+  esac
+
+
+fi
