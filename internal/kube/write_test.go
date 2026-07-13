@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -195,6 +196,176 @@ func TestWriteContextPreservesPermissions(t *testing.T) {
 
 	if err := WriteContext(kubeconfigEnv(path), "/nonexistent-home", "kind-2"); err != nil {
 		t.Fatalf("WriteContext: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("permissions = %o, want 0600", perm)
+	}
+}
+
+// nsInsertConfig has an active context whose block has no namespace key — the
+// canvas for insert-when-absent surgery.
+const nsInsertConfig = `apiVersion: v1
+kind: Config
+current-context: kind-1
+contexts:
+  - name: kind-1
+    context:
+      cluster: kind-1
+      user: kind-1-user
+  - name: kind-2
+    context:
+      cluster: kind-2
+      namespace: staging
+`
+
+func TestValidNamespace(t *testing.T) {
+	valid := []string{"default", "kube-system", "a", "payments2", "x-y-z", strings.Repeat("a", 63)}
+	invalid := []string{"", "Bad_NS", "UPPER", "-lead", "trail-", "under_score", "has space", "a.b", strings.Repeat("a", 64)}
+	for _, s := range valid {
+		if !ValidNamespace(s) {
+			t.Errorf("ValidNamespace(%q) = false, want true", s)
+		}
+	}
+	for _, s := range invalid {
+		if ValidNamespace(s) {
+			t.Errorf("ValidNamespace(%q) = true, want false", s)
+		}
+	}
+}
+
+// Setting an existing namespace changes exactly that value; every other byte,
+// including the inline comment on the same line, survives.
+func TestWriteNamespaceReplacesInPlace(t *testing.T) {
+	path := writeTemp(t, kindConfig) // kind-1 current, namespace: payments # inline...
+
+	if err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "billing"); err != nil {
+		t.Fatalf("WriteNamespace: %v", err)
+	}
+
+	got, _ := os.ReadFile(path)
+	want := strings.Replace(kindConfig,
+		"namespace: payments # inline comment must survive",
+		"namespace: billing # inline comment must survive", 1)
+	if string(got) != want {
+		t.Errorf("file after set:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Only the active context (kind-1) changes; the other context's namespace is
+// byte-identical.
+func TestWriteNamespaceTouchesOnlyActiveContext(t *testing.T) {
+	path := writeTemp(t, kindConfig)
+
+	if err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "billing"); err != nil {
+		t.Fatalf("WriteNamespace: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "namespace: staging") {
+		t.Errorf("kind-2 namespace must be untouched:\n%s", got)
+	}
+}
+
+// When the active context has no namespace key, one is inserted as the first
+// child of its context mapping, aligned with the siblings; the rest is intact.
+func TestWriteNamespaceInsertsWhenAbsent(t *testing.T) {
+	path := writeTemp(t, nsInsertConfig)
+
+	if err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "payments"); err != nil {
+		t.Fatalf("WriteNamespace: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	want := strings.Replace(nsInsertConfig,
+		"      cluster: kind-1\n",
+		"      namespace: payments\n      cluster: kind-1\n", 1)
+	if string(got) != want {
+		t.Errorf("file after insert:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The write target is the file that defines the active context, even when a
+// different file owns current-context. The other file stays byte-identical.
+func TestWriteNamespaceTargetSelection(t *testing.T) {
+	currentOnly := `apiVersion: v1
+kind: Config
+current-context: kind-2
+`
+	defines := `apiVersion: v1
+kind: Config
+contexts:
+  - name: kind-2
+    context:
+      cluster: kind-2
+      namespace: staging
+`
+	first := writeTemp(t, currentOnly) // owns current-context, no kind-2 entry
+	second := writeTemp(t, defines)    // defines kind-2
+
+	if err := WriteNamespace(kubeconfigEnv(first, second), "/nonexistent-home", "billing"); err != nil {
+		t.Fatalf("WriteNamespace: %v", err)
+	}
+
+	if got, _ := os.ReadFile(first); string(got) != currentOnly {
+		t.Errorf("first file must stay byte-identical:\n%s", got)
+	}
+	gotSecond, _ := os.ReadFile(second)
+	if !strings.Contains(string(gotSecond), "namespace: billing") {
+		t.Errorf("second file must be updated:\n%s", gotSecond)
+	}
+}
+
+func TestWriteNamespaceErrors(t *testing.T) {
+	t.Run("no current-context", func(t *testing.T) {
+		path := writeTemp(t, noCurrentConfig)
+		before, _ := os.ReadFile(path)
+		err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "billing")
+		if !errors.Is(err, ErrNoActiveContext) {
+			t.Fatalf("err = %v, want ErrNoActiveContext", err)
+		}
+		if after, _ := os.ReadFile(path); string(after) != string(before) {
+			t.Errorf("file must not be modified:\n%s", after)
+		}
+	})
+
+	t.Run("active context not defined in any file", func(t *testing.T) {
+		cfg := `apiVersion: v1
+kind: Config
+current-context: ghost
+contexts:
+  - name: kind-1
+    context:
+      cluster: kind-1
+`
+		path := writeTemp(t, cfg)
+		err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "billing")
+		if !errors.Is(err, ErrContextNotFound) {
+			t.Fatalf("err = %v, want ErrContextNotFound", err)
+		}
+		if after, _ := os.ReadFile(path); string(after) != cfg {
+			t.Errorf("file must not be modified:\n%s", after)
+		}
+	})
+
+	t.Run("broken kubeconfig is never modified", func(t *testing.T) {
+		broken := "{ this is : not [ valid yaml\n"
+		path := writeTemp(t, broken)
+		// A broken sole file yields no resolvable active context.
+		if err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "billing"); err == nil {
+			t.Fatal("WriteNamespace must refuse when the kubeconfig is unusable")
+		}
+		if after, _ := os.ReadFile(path); string(after) != broken {
+			t.Errorf("broken file must stay byte-identical:\n%s", after)
+		}
+	})
+}
+
+func TestWriteNamespacePreservesPermissions(t *testing.T) {
+	path := writeTemp(t, kindConfig) // written with 0600
+	if err := WriteNamespace(kubeconfigEnv(path), "/nonexistent-home", "billing"); err != nil {
+		t.Fatalf("WriteNamespace: %v", err)
 	}
 	fi, err := os.Stat(path)
 	if err != nil {

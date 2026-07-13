@@ -141,7 +141,27 @@ and formatting are preserved byte-for-byte — and the write is atomic (temp fil
 + rename, permissions kept). An unreadable or unparsable kubeconfig is never
 touched. With a multi-file `$KUBECONFIG`, the file that already sets
 `current-context` is updated (else the first file), matching kubectl. `list` is
-a reserved word. Namespace switching is out of scope — use kubectl/kubens.
+a reserved word.
+
+### Switching the namespace
+
+```bash
+omnictx ns staging # set the active context's namespace (rewrites kubeconfig)
+omnictx ns         # print the active context's namespace
+```
+
+`namespace` is an accepted alias for `ns` (`omnictx namespace staging`). This
+switches the namespace of the **active** context (the one matching
+`current-context`) with the same care as the context switch: the name must be a
+valid Kubernetes namespace (a DNS-1123 label — otherwise a usage error and exit
+2, nothing written); only that context's `namespace:` changes — an existing
+value is replaced in place (inline comments preserved) or a `namespace:` line is
+inserted into its `context:` block, everything else byte-for-byte; and the write
+is atomic (temp file + rename, permissions kept). If there is no active context,
+the context is not defined in any file, or the kubeconfig is unreadable, it fails
+loudly (exit 1, nothing written). omnictx is offline and cannot enumerate cluster
+namespaces, so there is no `ns list` form (`omnictx ns list` would set the
+namespace to the literal `list`).
 
 ### Manual integration (advanced)
 
@@ -179,6 +199,8 @@ omnictx cloud azure prod      # switch the default Azure subscription (name/id/a
 omnictx kube                  # show the current kube-context
 omnictx kube list             # kubectl-style table of contexts (current marked *)
 omnictx kube prod-cluster     # switch the current kube-context
+omnictx ns                    # show the active context's namespace
+omnictx ns staging            # switch the active context's namespace (alias: namespace)
 ```
 
 `--shell` is the **only** render-mode flag. Everything else is controlled via

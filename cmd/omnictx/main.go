@@ -52,6 +52,8 @@ func main() {
 			os.Exit(runCloud(args[1:], os.Stdout, os.Stderr))
 		case "kube":
 			os.Exit(runKube(args[1:], os.Stdout, os.Stderr))
+		case "ns", "namespace":
+			os.Exit(runNamespace(args[1:], os.Stdout, os.Stderr))
 		}
 	}
 
@@ -156,6 +158,10 @@ Subcommands:
                     all available contexts; on/off toggle the kube segment in the
                     config file and never touch kubeconfig (OMNICTX_KUBE overrides
                     per-session)
+  ns [<name>]       (alias: namespace)
+                    switch the namespace of the active kube-context (rewrites
+                    that context entry in kubeconfig); no argument prints the
+                    current namespace. Offline: it cannot list cluster namespaces
 
 Flags:
   --version                   print version and exit
@@ -421,6 +427,43 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := kube.WriteContext(os.LookupEnv, home, target); err != nil {
+		_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const namespaceUsage = "usage: omnictx ns [<name>]"
+
+// runNamespace handles `omnictx ns [<name>]` (alias: `namespace`). No argument
+// prints the active context's namespace (empty prints nothing). One argument
+// switches the namespace of the active kube-context by rewriting its entry in
+// the kubeconfig — the second omnictx path that writes to a file it does not
+// own, and only on an explicit user command. The name is validated as a
+// DNS-1123 label first (invalid → exit 2, no write); kubeconfig-state problems
+// (no active context, context not defined, unlocatable/broken) fail loudly with
+// exit 1. There is deliberately no offline `list` form — omnictx never contacts
+// the cluster — so `ns list` sets the namespace to the literal `list`.
+func runNamespace(args []string, stdout, stderr io.Writer) int {
+	home, _ := os.UserHomeDir()
+
+	if len(args) == 0 {
+		if ns := kube.Read(os.LookupEnv, home).Namespace; ns != "" {
+			_, _ = fmt.Fprintln(stdout, ns)
+		}
+		return 0
+	}
+	if len(args) > 1 {
+		_, _ = fmt.Fprintln(stderr, namespaceUsage)
+		return 2
+	}
+
+	name := args[0]
+	if !kube.ValidNamespace(name) {
+		_, _ = fmt.Fprintf(stderr, "omnictx: invalid namespace %q (must be a DNS-1123 label)\n%s\n", name, namespaceUsage)
+		return 2
+	}
+	if err := kube.WriteNamespace(os.LookupEnv, home, name); err != nil {
 		_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 		return 1
 	}
