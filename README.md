@@ -16,7 +16,7 @@ the prompt budget (cold start + render < 10 ms).
 **Core invariant:** rendering never breaks your prompt and never writes
 anything. Any error (missing file, broken YAML/JSON/INI, not logged in)
 silently skips the affected segment and exits 0. Writes happen only in
-explicit commands (`kube <ctx>`, `cloud <p> use`, toggles), which do the
+explicit commands (`kube <ctx>`, `cloud <p> <account>`, toggles), which do the
 opposite: validate strictly and fail loudly.
 
 **One active cloud.** The cloud slot shows a single provider, chosen by `cloud:`
@@ -101,12 +101,12 @@ them the same careful way it switches kube-contexts (validate first, atomic
 write, never touch an unparsable file):
 
 ```bash
-omnictx cloud gcp use work           # writes <gcloud>/active_config
-omnictx cloud azure use "My Sub"     # flips isDefault in azureProfile.json
-omnictx cloud azure use 11111111-2222-3333-4444-555555555555 # by id — for name collisions
+omnictx cloud gcp work               # writes <gcloud>/active_config
+omnictx cloud azure "My Sub"         # flips isDefault in azureProfile.json
+omnictx cloud azure 11111111-2222-3333-4444-555555555555 # by id — for name collisions
 ```
 
-A successful `use` also pins that provider as the displayed cloud (persists
+A successful switch also pins that provider as the displayed cloud (persists
 `cloud: <provider>`), so the prompt immediately shows what you just switched to.
 
 Short aliases live in the omnictx config file and are checked first:
@@ -118,7 +118,7 @@ aliases:
 ```
 
 AWS is the honest exception: the ecosystem has no persistent "current profile"
-(it is the session-scoped `AWS_PROFILE`), so `omnictx cloud aws use prod` just
+(it is the session-scoped `AWS_PROFILE`), so `omnictx cloud aws prod` just
 prints the correct command — `export AWS_PROFILE=prod` — and exits non-zero.
 
 ### Switching the kube-context
@@ -174,8 +174,8 @@ omnictx cloud aws             # persist: pin AWS as the active cloud
 omnictx cloud none            # persist: kube-only (no cloud slot)
 omnictx cloud aws list        # offline table of AWS profiles (also: gcp, azure)
 omnictx cloud list            # same table for the active provider
-omnictx cloud gcp use work    # activate a gcloud configuration
-omnictx cloud azure use prod  # switch the default Azure subscription (name/id/alias)
+omnictx cloud gcp work        # activate a gcloud configuration
+omnictx cloud azure prod      # switch the default Azure subscription (name/id/alias)
 omnictx kube                  # show the current kube-context
 omnictx kube list             # kubectl-style table of contexts (current marked *)
 omnictx kube prod-cluster     # switch the current kube-context
@@ -249,7 +249,7 @@ colors:                              # names or raw SGR codes (e.g. "1;34")
   cloud: blue                        # optional per-provider overrides: azure/aws/gcp
   kube: cyan
   namespace: dim
-aliases:                             # short names for `omnictx cloud <p> use <alias>`
+aliases:                             # short names for `omnictx cloud <p> <alias>`
   azure:
     prod: "Azure subscription 1"     # value = subscription name or id
   gcp:

@@ -39,7 +39,7 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   `cloud [azure|aws|gcp] list` (offline read-only table of local accounts: AWS
   profiles from config+credentials names, gcloud configurations, Azure
   subscriptions; bare `cloud list` = active provider; `list` reserved),
-  `cloud <azure|gcp> use <account>` (switch active account: gcp writes
+  `cloud <azure|gcp> <account>` (switch active account: gcp writes
   <gcloud>/active_config, azure flips isDefault in azureProfile.json via JSON
   round-trip with BOM preserved; name/id or `aliases.<provider>.<short>` from
   omnictx config; unknown/ambiguous → exit 2, broken source → exit 1; AWS
