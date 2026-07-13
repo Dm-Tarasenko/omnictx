@@ -1,7 +1,7 @@
 # PRD — `omnictx`: a zero-config multi-cloud context segment for the shell prompt
 
 > Status: Living spec (current state documented; multi-cloud is the next build).
-> Branch: `feat/omnictx`
+> Branch: `main` (changes land via feature branches + OpenSpec changes)
 > Implementation language: **Go** · Single external dependency: `gopkg.in/yaml.v3`
 > Intended executor: Claude Code / any coding agent, driven by this spec + `AGENTS.md`.
 
@@ -131,8 +131,10 @@ write), the edit is a single-line surgery preserving all other bytes, the write
 is atomic (same-dir temp + rename, permissions preserved), and an unparsable
 target is refused (exit 1). Multi-file `$KUBECONFIG`: the first file that sets
 `current-context` is updated, else the first file (mirrors the read rule and
-kubectl). Namespace switching is out of scope (nested YAML edit in a foreign
-file).
+kubectl). Namespace switching shipped later as `omnictx ns <name>` (see the
+`kube-namespace-cli` spec in `openspec/specs/`): a node-position-guided edit of
+the active context's block, with the same parse-before-write and atomic-rename
+safety.
 
 Implementation: subcommands in the binary that read the config path
 (`OMNICTX_CONFIG` > `~/.config/omnictx/config.yaml`), update only the `enabled:`
@@ -156,8 +158,9 @@ cloud: auto        # azure | aws | gcp | auto | none
   cloud slot is empty.
 - `none` — no cloud segment (kube-only).
 
-Override order (same precedence as everything): `--cloud <v>` > `OMNICTX_CLOUD` >
-`cloud:` in config > default (`auto`). **Kubernetes is independent** — it is its
+Override order (same precedence as everything): `OMNICTX_CLOUD` >
+`cloud:` in config > default (`auto`); there is no `--cloud` flag (`--shell`
+stays the only render-mode flag). **Kubernetes is independent** — it is its
 own segment and is unaffected by the cloud selection.
 
 The `segments` list uses a single **`cloud`** slot (not per-provider names).
@@ -208,7 +211,8 @@ Graceful: any parse error yields no value (never breaks the prompt).
 ### 5.6 Config / env additions
 - Config: `cloud:` key (§5.1); `colors.cloud` (+ optional `colors.azure|aws|gcp`).
 - Env: `OMNICTX_CLOUD=azure|aws|gcp|auto|none`.
-- `--help` lists env vars under the Configuration section.
+- `--help` names the per-session env overrides inline in the subcommand
+  descriptions (the full env table lives in the README Configuration section).
 
 ### 5.7 Icons / ASCII
 Icon mode: per-provider Nerd Font glyph + value (`󰠅 ` Azure, ` ` AWS, `󱇶 ` GCP).
@@ -274,7 +278,7 @@ is a thin glue layer.
 - [ ] Each new source is offline-only and degrades gracefully (no prompt breakage).
 - [ ] Only one cloud is ever shown; kube remains independent.
 - [ ] No dependency beyond `yaml.v3`.
-- [ ] `--help` stays grouped and unambiguous; env vars listed in Configuration section.
+- [ ] `--help` stays grouped and unambiguous; per-session env overrides named in it.
 - [ ] `go build`, `go vet`, `go test ./... -race`, `golangci-lint` all green; CI green.
 - [ ] `AGENTS.md`, `README.md`, `Makefile` reflect AWS/GCP + the `cloud` config.
 

@@ -42,12 +42,10 @@ func main() {
 		switch args[0] {
 		case "init":
 			os.Exit(runInit(args[1:]))
-		case "on", "enable":
+		case "on":
 			os.Exit(runEnable(true))
-		case "off", "disable":
+		case "off":
 			os.Exit(runEnable(false))
-		case "toggle":
-			os.Exit(runToggle())
 		case "cloud":
 			os.Exit(runCloud(args[1:], os.Stdout, os.Stderr))
 		case "kube":
@@ -116,7 +114,7 @@ func runRender(args []string) {
 	cfg, _ := config.Resolve(flags, os.LookupEnv, home)
 
 	if !cfg.Enabled {
-		// omnioff path: print nothing, exit 0.
+		// Disabled (omnictx off / OMNICTX_ENABLED=false): print nothing, exit 0.
 		return
 	}
 
@@ -245,29 +243,9 @@ func setGlobalEnabled(path string, enabled bool) error {
 	return setConfigKey(path, "enabled", val)
 }
 
-// runEnable handles `omnictx enable` and `omnictx disable`.
+// runEnable handles `omnictx on` and `omnictx off`.
 func runEnable(enabled bool) int {
 	if err := setGlobalEnabled(globalConfigPath(), enabled); err != nil {
-		fmt.Fprintf(os.Stderr, "omnictx: %v\n", err)
-		return 1
-	}
-	return 0
-}
-
-// runToggle handles `omnictx toggle`: reads the persisted state and flips it.
-func runToggle() int {
-	path := globalConfigPath()
-	enabled := true
-	if data, err := os.ReadFile(path); err == nil {
-		for _, l := range strings.Split(string(data), "\n") {
-			t := strings.TrimSpace(l)
-			if strings.HasPrefix(t, "enabled:") {
-				enabled = strings.TrimSpace(strings.TrimPrefix(t, "enabled:")) != "false"
-				break
-			}
-		}
-	}
-	if err := setGlobalEnabled(path, !enabled); err != nil {
 		fmt.Fprintf(os.Stderr, "omnictx: %v\n", err)
 		return 1
 	}
@@ -318,7 +296,7 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 		case isProvider:
 			// Two-argument switch form: the second word is the account
 			// (`use` is no longer a reserved keyword).
-			return runCloudUse(provider, args[1], home, stderr)
+			return runCloudSwitch(provider, args[1], home, stderr)
 		default:
 			// A non-provider first argument (auto/none/on/off/unknown) never
 			// takes a second argument.
@@ -470,14 +448,14 @@ func runNamespace(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runCloudUse handles `omnictx cloud <provider> <account>`: switching the
+// runCloudSwitch handles `omnictx cloud <provider> <account>`: switching the
 // provider's active account where that state lives in a local file (gcloud
 // active_config, azureProfile.json isDefault). The provider is one of
 // azure/gcp/aws (validated by the caller). AWS is the honest exception — it
 // has no persistent current-profile concept, so we print the session env hint
 // instead of inventing one. The account argument goes through the `aliases`
 // config key first; names/ids are otherwise matched verbatim.
-func runCloudUse(provider, account string, home string, stderr io.Writer) int {
+func runCloudSwitch(provider, account string, home string, stderr io.Writer) int {
 	account = strings.TrimSpace(account)
 
 	cfg, notes := config.Resolve(config.Flags{}, os.LookupEnv, home)

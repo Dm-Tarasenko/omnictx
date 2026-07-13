@@ -57,6 +57,20 @@ func TestParseRenderArgsBadFlag(t *testing.T) {
 	}
 }
 
+// toggle/enable/disable are not subcommands: like any unrecognized word they
+// fall through to render mode, which parses them as harmless positional args
+// (ok=true, nothing set) and never writes anything — so `omnictx toggle` can
+// never flip the persisted enabled state.
+func TestParseRenderArgsRemovedWordsFallThroughToRender(t *testing.T) {
+	for _, word := range []string{"toggle", "enable", "disable"} {
+		flags, showVersion, showHelp, ok := parseRenderArgs([]string{word})
+		if !ok || showVersion || showHelp || flags.Shell != nil {
+			t.Errorf("%s: want plain render fall-through, got ok=%v version=%v help=%v flags=%+v",
+				word, ok, showVersion, showHelp, flags)
+		}
+	}
+}
+
 // --help / -h must be reported as a clean help request (ok=true, showHelp=true),
 // not as a parse error, so the caller can print usage and exit 0.
 func TestParseRenderArgsHelp(t *testing.T) {
@@ -908,7 +922,7 @@ func azureUseEnv(t *testing.T, fixture string) string {
 	return dir
 }
 
-func TestRunCloudUseGcp(t *testing.T) {
+func TestRunCloudSwitchGcp(t *testing.T) {
 	t.Run("by name", func(t *testing.T) {
 		dir := gcloudUseEnv(t)
 		cfgPath := cloudTestConfig(t)
@@ -976,7 +990,7 @@ func TestRunCloudUseGcp(t *testing.T) {
 	})
 }
 
-func TestRunCloudUseAzure(t *testing.T) {
+func TestRunCloudSwitchAzure(t *testing.T) {
 	t.Run("by id via alias", func(t *testing.T) {
 		dir := azureUseEnv(t, "azureProfile_dupnames.json")
 		path := cloudTestConfig(t)
@@ -1047,7 +1061,7 @@ func TestRunCloudUseAzure(t *testing.T) {
 	})
 }
 
-func TestRunCloudUseAwsHint(t *testing.T) {
+func TestRunCloudSwitchAwsHint(t *testing.T) {
 	cloudTestConfig(t)
 	var stdout, stderr strings.Builder
 	if code := runCloud([]string{"aws", "prod"}, &stdout, &stderr); code != 2 {

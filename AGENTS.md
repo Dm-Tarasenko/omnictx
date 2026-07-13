@@ -75,6 +75,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   Boolean env vars (OMNICTX_ENABLED / OMNICTX_ICONS / OMNICTX_KUBE) accept on/off
   on top of ParseBool forms. `kube: true|false` (default true) gates the kube
   segment on top of the segments list; OMNICTX_KUBE is the session override.
+  OMNICTX_SHELL is the session-scoped counterpart of `--shell` (the flag,
+  supplied by `init`, wins by precedence); `shell` is deliberately NOT a config
+  file key.
 - internal/shellinit — `init bash|zsh` code generation (go:embed templates).
   Output must be idempotent. No shell functions defined (omnion/omnioff removed).
 - testdata — fixtures and golden files.
@@ -115,6 +118,6 @@ deprecation warnings. Job shape: go vet → golangci-lint → go test -race → 
 matrix linux/amd64,arm64.
 
 ## Definition of Done
-See section 7.5 of PRD.md. In short: build+test(-race) green, edge cases covered,
+See PRD.md §8.3. In short: build+test(-race) green, edge cases covered,
 prompt never breaks, config + init/toggles work, CI green, README with the
 `eval "$(omnictx init bash)"` install path.
