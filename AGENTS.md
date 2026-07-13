@@ -46,17 +46,27 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   excluded — prints `export AWS_PROFILE=<x>` hint, exit 2),
   `kube [<context>|list|on|off]` (switch current-context in kubeconfig / print
   current / list all / toggle the kube segment via config key `kube:`; reserved
-  words list|on|off; unknown context → exit 2, unparsable target → exit 1).
+  words list|on|off; unknown context → exit 2, unparsable target → exit 1),
+  `ns [<name>]` (alias `namespace`; switch the namespace of the active
+  kube-context in the kubeconfig / print current; name validated as a DNS-1123
+  label, invalid → exit 2; no active context / context not defined / broken
+  source → exit 1; offline — no `list` form, `ns list` sets the namespace to
+  `list`).
 - internal/cloud — Provider interface + active-cloud Select (azure|aws|gcp|auto|none).
 - internal/azure — Azure provider: active subscription from azureProfile.json (UTF-8 BOM).
 - internal/aws — AWS provider: profile (+region) from ~/.aws/config (offline; no STS).
 - internal/gcp — GCP provider: active-config project from ~/.config/gcloud (offline).
 - internal/ini — tiny stdlib INI reader shared by aws/gcp (no new dependency).
 - internal/kube — current-context + namespace from kubeconfig ($KUBECONFIG-aware).
-  Also the ONLY write path to a foreign file: `kube <context>` rewrites the
+  Also the TWO write paths to a foreign file: `kube <context>` rewrites the
   current-context line (parse-before-write, single-line surgery, atomic rename;
-  target = first $KUBECONFIG file with current-context, else first). Writes happen
-  only on explicit user command — render mode never writes anything.
+  target = first $KUBECONFIG file with current-context, else first), and
+  `ns <name>` (WriteNamespace) rewrites the namespace of the active
+  context's block (parse-before-write, node-position-guided surgery — replace
+  the namespace value preserving inline comments, or insert one as the first
+  child of the `context:` mapping; target = first $KUBECONFIG file defining the
+  active context; atomic rename). Both writes happen only on explicit user
+  command — render mode never writes anything.
 - internal/render — format, ANSI colors, bash (\[ \]) / zsh (%{ %}) escaping; the
   cloud slot is provider-driven (label from the active provider, color colors["cloud"]
   with optional per-provider colors[key] override).

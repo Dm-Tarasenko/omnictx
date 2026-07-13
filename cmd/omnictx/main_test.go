@@ -318,6 +318,111 @@ func TestRunKubeTooManyArgs(t *testing.T) {
 	}
 }
 
+// The ns subcommand (alias: namespace) must be listed under Subcommands.
+func TestUsageListsNamespaceSubcommand(t *testing.T) {
+	var sb strings.Builder
+	printUsage(&sb)
+	out := sb.String()
+
+	for _, want := range []string{"ns [<name>]", "alias: namespace", "cannot list cluster namespaces"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestRunNamespaceSwitch(t *testing.T) {
+	path := kubeTestConfig(t, kindKubeconfig) // kind-1 current, namespace payments
+
+	var stdout, stderr strings.Builder
+	if code := runNamespace([]string{"billing"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+
+	// Only the active context's namespace changed.
+	data, _ := os.ReadFile(path)
+	want := strings.Replace(kindKubeconfig, "namespace: payments", "namespace: billing", 1)
+	if string(data) != want {
+		t.Errorf("kubeconfig after switch:\n%s\nwant:\n%s", data, want)
+	}
+
+	// The switch is visible to the read path (and therefore to render).
+	stdout.Reset()
+	if code := runNamespace(nil, &stdout, &stderr); code != 0 {
+		t.Fatalf("read-back exit code = %d", code)
+	}
+	if stdout.String() != "billing\n" {
+		t.Errorf("read-back = %q, want %q", stdout.String(), "billing\n")
+	}
+}
+
+func TestRunNamespaceNoArg(t *testing.T) {
+	t.Run("prints current namespace", func(t *testing.T) {
+		kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		if code := runNamespace(nil, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "payments\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "payments\n")
+		}
+	})
+	t.Run("quiet when no kubeconfig", func(t *testing.T) {
+		t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+		var stdout, stderr strings.Builder
+		if code := runNamespace(nil, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "" {
+			t.Errorf("stdout = %q, want empty", stdout.String())
+		}
+	})
+}
+
+func TestRunNamespaceInvalidName(t *testing.T) {
+	path := kubeTestConfig(t, kindKubeconfig)
+	var stdout, stderr strings.Builder
+	if code := runNamespace([]string{"Bad_NS"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "invalid namespace") {
+		t.Errorf("stderr should explain the invalid name:\n%s", stderr.String())
+	}
+	if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+		t.Errorf("kubeconfig must not be modified on a usage error:\n%s", data)
+	}
+}
+
+func TestRunNamespaceTooManyArgs(t *testing.T) {
+	kubeTestConfig(t, kindKubeconfig)
+	var stdout, stderr strings.Builder
+	if code := runNamespace([]string{"a", "b"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "usage:") {
+		t.Errorf("stderr should show usage:\n%s", stderr.String())
+	}
+}
+
+func TestRunNamespaceNoActiveContext(t *testing.T) {
+	// A kubeconfig with contexts but no current-context: nothing to switch.
+	cfg := `apiVersion: v1
+kind: Config
+contexts:
+  - name: kind-1
+    context:
+      cluster: kind-1
+`
+	path := kubeTestConfig(t, cfg)
+	var stdout, stderr strings.Builder
+	if code := runNamespace([]string{"billing"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr.String())
+	}
+	if data, _ := os.ReadFile(path); string(data) != cfg {
+		t.Errorf("kubeconfig must not be modified:\n%s", data)
+	}
+}
+
 // cloudTestConfig points OMNICTX_CONFIG at a temp file and neutralizes
 // OMNICTX_CLOUD so the ambient environment cannot leak into the test.
 func cloudTestConfig(t *testing.T) string {
