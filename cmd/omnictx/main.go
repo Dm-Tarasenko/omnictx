@@ -144,7 +144,7 @@ Subcommands:
                     offline table of that provider's local accounts (AWS profiles,
                     gcloud configurations, Azure subscriptions); bare "cloud list"
                     uses the active provider
-  cloud <azure|gcp> use <account>
+  cloud <azure|gcp> <account>
                     switch the active account: azure flips isDefault in
                     azureProfile.json (name or id), gcp activates the named
                     configuration; accepts short aliases from the config file
@@ -270,7 +270,7 @@ func runToggle() int {
 
 const cloudUsage = "usage: omnictx cloud [azure|aws|gcp|auto|none|on|off]\n" +
 	"       omnictx cloud [azure|aws|gcp] list\n" +
-	"       omnictx cloud <azure|gcp> use <account>"
+	"       omnictx cloud <azure|gcp> <account>"
 
 // runCloud handles `omnictx cloud [value]` and the read-only listing forms.
 // With no argument it prints the effective selection (env > config > default).
@@ -289,29 +289,33 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, cfg.Cloud)
 		return 0
 	}
-	if len(args) > 3 {
+	if len(args) > 2 {
 		_, _ = fmt.Fprintln(stderr, cloudUsage)
 		return 2
-	}
-
-	if len(args) == 3 {
-		return runCloudUse(args, home, stdout, stderr)
 	}
 
 	if len(args) == 2 {
 		provider := strings.ToLower(strings.TrimSpace(args[0]))
 		form := strings.ToLower(strings.TrimSpace(args[1]))
+		isProvider := provider == "azure" || provider == "aws" || provider == "gcp"
 		switch {
-		case form != "list":
-			_, _ = fmt.Fprintln(stderr, cloudUsage)
-			return 2
-		case provider == "azure" || provider == "aws" || provider == "gcp":
+		case form == "list":
+			if !isProvider {
+				_, _ = fmt.Fprintln(stderr, cloudUsage)
+				return 2
+			}
 			if provider == "azure" {
 				warnAll(stderr, azure.Check(os.LookupEnv, home))
 			}
 			printCloudList(stdout, provider, home)
 			return 0
+		case isProvider:
+			// Two-argument switch form: the second word is the account
+			// (`use` is no longer a reserved keyword).
+			return runCloudUse(provider, args[1], home, stderr)
 		default:
+			// A non-provider first argument (auto/none/on/off/unknown) never
+			// takes a second argument.
 			_, _ = fmt.Fprintln(stderr, cloudUsage)
 			return 2
 		}
@@ -423,21 +427,15 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runCloudUse handles `omnictx cloud <provider> use <account>`: switching the
+// runCloudUse handles `omnictx cloud <provider> <account>`: switching the
 // provider's active account where that state lives in a local file (gcloud
-// active_config, azureProfile.json isDefault). AWS is the honest exception —
-// it has no persistent current-profile concept, so we print the session env
-// hint instead of inventing one. The account argument goes through the
-// `aliases` config key first; names/ids are otherwise matched verbatim.
-func runCloudUse(args []string, home string, _, stderr io.Writer) int {
-	provider := strings.ToLower(strings.TrimSpace(args[0]))
-	verb := strings.ToLower(strings.TrimSpace(args[1]))
-	account := strings.TrimSpace(args[2])
-
-	if verb != "use" {
-		_, _ = fmt.Fprintln(stderr, cloudUsage)
-		return 2
-	}
+// active_config, azureProfile.json isDefault). The provider is one of
+// azure/gcp/aws (validated by the caller). AWS is the honest exception — it
+// has no persistent current-profile concept, so we print the session env hint
+// instead of inventing one. The account argument goes through the `aliases`
+// config key first; names/ids are otherwise matched verbatim.
+func runCloudUse(provider, account string, home string, stderr io.Writer) int {
+	account = strings.TrimSpace(account)
 
 	cfg, notes := config.Resolve(config.Flags{}, os.LookupEnv, home)
 	warnAll(stderr, notes)

@@ -106,7 +106,7 @@ func TestUsageListsCloudSubcommand(t *testing.T) {
 	for _, want := range []string{
 		"cloud [azure|aws|gcp|auto|none|on|off]",
 		"cloud [azure|aws|gcp] list",
-		"cloud <azure|gcp> use <account>",
+		"cloud <azure|gcp> <account>",
 		"AWS_PROFILE", // the honest AWS answer lives in the help too
 		"OMNICTX_CLOUD", // the per-session override is worth calling out
 	} {
@@ -412,7 +412,7 @@ func TestRunCloudRejectsInvalid(t *testing.T) {
 	}{
 		{"typo", []string{"awz"}},
 		{"empty", []string{""}},
-		{"too many args", []string{"aws", "gcp"}},
+		{"too many args", []string{"azure", "sub", "extra"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -808,17 +808,17 @@ func TestRunCloudUseGcp(t *testing.T) {
 		dir := gcloudUseEnv(t)
 		cfgPath := cloudTestConfig(t)
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"gcp", "use", "work"}, &stdout, &stderr); code != 0 {
+		if code := runCloud([]string{"gcp", "work"}, &stdout, &stderr); code != 0 {
 			t.Fatalf("exit code = %d (stderr: %s)", code, stderr.String())
 		}
 		data, _ := os.ReadFile(filepath.Join(dir, "active_config"))
 		if string(data) != "work" {
 			t.Errorf("active_config = %q, want work", data)
 		}
-		// A successful use also pins the provider as the displayed cloud.
+		// A successful switch also pins the provider as the displayed cloud.
 		cfg, _ := os.ReadFile(cfgPath)
 		if !strings.Contains(string(cfg), "cloud: gcp") {
-			t.Errorf("omnictx config should gain cloud: gcp after use:\n%s", cfg)
+			t.Errorf("omnictx config should gain cloud: gcp after switch:\n%s", cfg)
 		}
 	})
 
@@ -829,7 +829,7 @@ func TestRunCloudUseGcp(t *testing.T) {
 			t.Fatal(err)
 		}
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"gcp", "use", "w"}, &stdout, &stderr); code != 0 {
+		if code := runCloud([]string{"gcp", "w"}, &stdout, &stderr); code != 0 {
 			t.Fatalf("exit code = %d (stderr: %s)", code, stderr.String())
 		}
 		data, _ := os.ReadFile(filepath.Join(dir, "active_config"))
@@ -842,13 +842,31 @@ func TestRunCloudUseGcp(t *testing.T) {
 		gcloudUseEnv(t)
 		cloudTestConfig(t)
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"gcp", "use", "prod"}, &stdout, &stderr); code != 2 {
+		if code := runCloud([]string{"gcp", "prod"}, &stdout, &stderr); code != 2 {
 			t.Fatalf("exit code = %d, want 2", code)
 		}
 		for _, want := range []string{"default", "work"} {
 			if !strings.Contains(stderr.String(), want) {
 				t.Errorf("stderr missing %q:\n%s", want, stderr.String())
 			}
+		}
+	})
+
+	// `use` is no longer reserved: a configuration literally named `use` is
+	// switchable via the two-argument form.
+	t.Run("configuration named use still works", func(t *testing.T) {
+		dir := gcloudUseEnv(t)
+		if err := os.WriteFile(filepath.Join(dir, "configurations", "config_use"), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"gcp", "use"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "active_config"))
+		if string(data) != "use" {
+			t.Errorf("active_config = %q, want use", data)
 		}
 	})
 }
@@ -861,29 +879,29 @@ func TestRunCloudUseAzure(t *testing.T) {
 			t.Fatal(err)
 		}
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"azure", "use", "second"}, &stdout, &stderr); code != 0 {
+		if code := runCloud([]string{"azure", "second"}, &stdout, &stderr); code != 0 {
 			t.Fatalf("exit code = %d (stderr: %s)", code, stderr.String())
 		}
 		data, _ := os.ReadFile(filepath.Join(dir, "azureProfile.json"))
 		if !strings.Contains(string(data), `"keep-me-i-am-an-unknown-field"`) {
 			t.Errorf("unknown field lost:\n%s", data)
 		}
-		// A successful use also pins the provider as the displayed cloud.
+		// A successful switch also pins the provider as the displayed cloud.
 		cfg, _ := os.ReadFile(path)
 		if !strings.Contains(string(cfg), "cloud: azure") {
-			t.Errorf("omnictx config should gain cloud: azure after use:\n%s", cfg)
+			t.Errorf("omnictx config should gain cloud: azure after switch:\n%s", cfg)
 		}
 	})
 
-	t.Run("failed use does not pin the cloud", func(t *testing.T) {
+	t.Run("failed switch does not pin the cloud", func(t *testing.T) {
 		azureUseEnv(t, "azureProfile_default.json")
 		cfgPath := cloudTestConfig(t)
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"azure", "use", "nope"}, &stdout, &stderr); code != 2 {
+		if code := runCloud([]string{"azure", "nope"}, &stdout, &stderr); code != 2 {
 			t.Fatalf("exit code = %d, want 2", code)
 		}
 		if _, err := os.ReadFile(cfgPath); err == nil {
-			t.Error("failed use must not create/modify the omnictx config")
+			t.Error("failed switch must not create/modify the omnictx config")
 		}
 	})
 
@@ -891,7 +909,7 @@ func TestRunCloudUseAzure(t *testing.T) {
 		azureUseEnv(t, "azureProfile_dupnames.json")
 		cloudTestConfig(t)
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"azure", "use", "N/A(tenant level account)"}, &stdout, &stderr); code != 2 {
+		if code := runCloud([]string{"azure", "N/A(tenant level account)"}, &stdout, &stderr); code != 2 {
 			t.Fatalf("exit code = %d, want 2", code)
 		}
 		if !strings.Contains(stderr.String(), "aaaa-1111") || !strings.Contains(stderr.String(), "bbbb-2222") {
@@ -903,8 +921,23 @@ func TestRunCloudUseAzure(t *testing.T) {
 		t.Setenv("AZURE_CONFIG_DIR", t.TempDir())
 		cloudTestConfig(t)
 		var stdout, stderr strings.Builder
-		if code := runCloud([]string{"azure", "use", "x"}, &stdout, &stderr); code != 1 {
+		if code := runCloud([]string{"azure", "x"}, &stdout, &stderr); code != 1 {
 			t.Fatalf("exit code = %d, want 1", code)
+		}
+	})
+
+	// `use` is no longer reserved: a subscription literally named `use` is
+	// switchable via the two-argument form.
+	t.Run("subscription named use still works", func(t *testing.T) {
+		dir := azureUseEnv(t, "azureProfile_named_use.json")
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"azure", "use"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "azureProfile.json"))
+		if !strings.Contains(string(data), `"use"`) {
+			t.Errorf("subscription named use missing from result:\n%s", data)
 		}
 	})
 }
@@ -912,7 +945,7 @@ func TestRunCloudUseAzure(t *testing.T) {
 func TestRunCloudUseAwsHint(t *testing.T) {
 	cloudTestConfig(t)
 	var stdout, stderr strings.Builder
-	if code := runCloud([]string{"aws", "use", "prod"}, &stdout, &stderr); code != 2 {
+	if code := runCloud([]string{"aws", "prod"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "export AWS_PROFILE=prod") {
@@ -920,14 +953,40 @@ func TestRunCloudUseAwsHint(t *testing.T) {
 	}
 }
 
-func TestRunCloudUseInvalidVerb(t *testing.T) {
-	cloudTestConfig(t)
-	var stdout, stderr strings.Builder
-	if code := runCloud([]string{"gcp", "activate", "work"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+// Three-or-more arguments are always a usage error now that `use` is gone:
+// `cloud gcp use work` is `use` (an unknown account) with a stray extra arg.
+func TestRunCloudThreeArgsIsUsageError(t *testing.T) {
+	for _, args := range [][]string{
+		{"gcp", "use", "work"},
+		{"azure", "activate", "prod"},
+	} {
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud(args, &stdout, &stderr); code != 2 {
+			t.Fatalf("runCloud(%v) exit code = %d, want 2", args, code)
+		}
+		if !strings.Contains(stderr.String(), "usage:") {
+			t.Errorf("runCloud(%v) stderr should show usage:\n%s", args, stderr.String())
+		}
 	}
-	if !strings.Contains(stderr.String(), "usage:") {
-		t.Errorf("stderr should show usage:\n%s", stderr.String())
+}
+
+// A non-provider first argument never takes a second argument.
+func TestRunCloudNonProviderWithArgIsUsageError(t *testing.T) {
+	for _, args := range [][]string{
+		{"auto", "work"},
+		{"none", "work"},
+		{"on", "work"},
+		{"off", "work"},
+	} {
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud(args, &stdout, &stderr); code != 2 {
+			t.Fatalf("runCloud(%v) exit code = %d, want 2", args, code)
+		}
+		if !strings.Contains(stderr.String(), "usage:") {
+			t.Errorf("runCloud(%v) stderr should show usage:\n%s", args, stderr.String())
+		}
 	}
 }
 
