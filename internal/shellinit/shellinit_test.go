@@ -62,8 +62,9 @@ func TestGenerateDefaultsCmd(t *testing.T) {
 }
 
 // TestBashSnippetIsValidAndIdempotent eval's the generated bash twice in a
-// non-interactive shell and asserts the toggle functions exist and that the
-// original prompt was captured exactly once (idempotency).
+// non-interactive shell and asserts that no shell functions beyond the prompt
+// hook are defined (the omnion/omnioff/omnitoggle helpers were removed) and
+// that the original prompt was captured exactly once (idempotency).
 func TestBashSnippetIsValidAndIdempotent(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -77,10 +78,9 @@ func TestBashSnippetIsValidAndIdempotent(t *testing.T) {
 	script := `PS1='orig> '
 ` + snippet + `
 ` + snippet + `
-type omnion >/dev/null 2>&1 && echo HAS_OMNION
-type omnioff >/dev/null 2>&1 && echo HAS_OMNIOFF
 type omnitoggle >/dev/null 2>&1 && echo HAS_OMNITOGGLE_SHOULD_NOT_EXIST
-type omnion    >/dev/null 2>&1 && echo HAS_OMNION_SHOULD_NOT_EXIST
+type omnion >/dev/null 2>&1 && echo HAS_OMNION_SHOULD_NOT_EXIST
+type omnioff >/dev/null 2>&1 && echo HAS_OMNIOFF_SHOULD_NOT_EXIST
 echo "ORIG=${__OMNICTX_ORIG_PS1}"
 __omnictx_prompt
 echo "PS1=${PS1}"
@@ -106,6 +106,9 @@ echo "PS1=${PS1}"
 	}
 	if strings.Contains(out, "HAS_OMNION_SHOULD_NOT_EXIST") {
 		t.Errorf("omnion should not be defined:\n%s", out)
+	}
+	if strings.Contains(out, "HAS_OMNIOFF_SHOULD_NOT_EXIST") {
+		t.Errorf("omnioff should not be defined:\n%s", out)
 	}
 }
 

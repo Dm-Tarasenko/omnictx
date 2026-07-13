@@ -6,7 +6,7 @@ A tiny, fast Go binary that prints a shell-prompt segment showing your active
 configuration, Azure subscription) without leaving the prompt.
 
 ```
-☁ prod-subscription ⎈ prod-cluster:payments
+󰠅 prod-subscription ⎈ prod-cluster:payments
 ```
 
 It works on local config files **directly** — no `kubectl`/`az`/`aws`/`gcloud`,
@@ -53,7 +53,6 @@ than once in the same shell — and defines no functions beyond the prompt hook.
 ```bash
 omnictx off        # persist enabled: false — all future shells start quiet
 omnictx on         # persist enabled: true  — restore the segment
-omnictx toggle     # flip the persisted state
 omnictx cloud off  # hide just the cloud slot (alias for cloud none)
 omnictx cloud on   # show it again (alias for cloud auto — re-pin if you had one)
 omnictx kube off   # hide just the kube segment (namespace goes with it)
@@ -66,7 +65,7 @@ unset, and all boolean ones accept `on`/`off` as well as `true`/`false`:
 
 | Segment | Persistent (command) | Session-only (env) |
 |---|---|---|
-| everything | `omnictx on/off/toggle` | `export OMNICTX_ENABLED=off` |
+| everything | `omnictx on/off` | `export OMNICTX_ENABLED=off` |
 | cloud slot | `omnictx cloud on/off` | `export OMNICTX_CLOUD=none` / `unset` |
 | kube (+namespace) | `omnictx kube on/off` | `export OMNICTX_KUBE=off` |
 
@@ -188,7 +187,7 @@ omnictx                       # print the segment (standalone / debugging)
 omnictx --shell bash|zsh|none # color escaping mode (supplied by init)
 omnictx --version
 omnictx init bash|zsh         # print shell integration code
-omnictx on|off|toggle         # persist the enabled state to the config file
+omnictx on|off                # persist the enabled state to the config file
 omnictx cloud                 # show the effective active-cloud selection
 omnictx cloud aws             # persist: pin AWS as the active cloud
 omnictx cloud none            # persist: kube-only (no cloud slot)
@@ -208,7 +207,8 @@ omnictx ns staging            # switch the active context's namespace (alias: na
 
 ### Output format
 
-- Icons (default): `☁ <cloud> ⎈ <context>:<namespace>` (one `☁` for any provider).
+- Icons (default): `<glyph> <cloud> ⎈ <context>:<namespace>`, with a per-provider
+  Nerd Font glyph (`󰠅 ` Azure, ` ` AWS, `󱇶 ` GCP).
 - ASCII (`icons: false` / `OMNICTX_ICONS=false`): `az:`/`aws:`/`gcp:` `<cloud>`
   `k8s:<context>/<namespace>`.
 
@@ -246,7 +246,7 @@ with this precedence (the only render-mode flag is `--shell`):
 | `kube` / `omnictx kube on\|off` | `OMNICTX_KUBE` | `true` | show the kube segment (namespace follows) |
 | `icons` | `OMNICTX_ICONS` | `true` | icons vs ASCII labels |
 | `separator` | `OMNICTX_SEPARATOR` | `" "` | separator between segments |
-| `enabled` / `omnictx on\|off\|toggle` | `OMNICTX_ENABLED` | `true` | master on/off |
+| `enabled` / `omnictx on\|off` | `OMNICTX_ENABLED` | `true` | master on/off |
 | `colors` | — | blue/cyan/dim | per-segment colors (config file only) |
 | `--shell bash\|zsh\|none` (flag) | `OMNICTX_SHELL` | `none` | color escaping mode |
 | — | `OMNICTX_CONFIG` | `~/.config/omnictx/config.yaml` | config file path |

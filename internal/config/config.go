@@ -96,8 +96,9 @@ func Defaults() Config {
 }
 
 // Resolve merges all layers and returns the effective Config plus a slice of
-// human-readable debug notes (only meaningful when --debug is set). It never
-// returns an error: every failure degrades gracefully to a lower layer.
+// human-readable notes (render mode discards them; interactive subcommands
+// print them as stderr warnings). It never returns an error: every failure
+// degrades gracefully to a lower layer.
 func Resolve(flags Flags, lookupEnv LookupEnv, home string) (Config, []string) {
 	var debug []string
 	cfg := Defaults()
