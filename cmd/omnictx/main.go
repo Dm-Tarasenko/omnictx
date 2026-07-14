@@ -159,7 +159,8 @@ Subcommands:
   ns [<name>]       (alias: namespace)
                     switch the namespace of the active kube-context (rewrites
                     that context entry in kubeconfig); no argument prints the
-                    current namespace. Offline: it cannot list cluster namespaces
+                    current namespace. "list" is reserved and rejected — omnictx
+                    is offline and cannot list cluster namespaces
 
 Flags:
   --version                   print version and exit
@@ -421,7 +422,8 @@ const namespaceUsage = "usage: omnictx ns [<name>]"
 // DNS-1123 label first (invalid → exit 2, no write); kubeconfig-state problems
 // (no active context, context not defined, unlocatable/broken) fail loudly with
 // exit 1. There is deliberately no offline `list` form — omnictx never contacts
-// the cluster — so `ns list` sets the namespace to the literal `list`.
+// the cluster — but `list` is reserved so the natural guess `ns list` cannot
+// silently switch to a namespace literally named `list` (exit 2, no write).
 func runNamespace(args []string, stdout, stderr io.Writer) int {
 	home, _ := os.UserHomeDir()
 
@@ -437,6 +439,10 @@ func runNamespace(args []string, stdout, stderr io.Writer) int {
 	}
 
 	name := args[0]
+	if name == "list" {
+		_, _ = fmt.Fprintf(stderr, "omnictx: %q is reserved: omnictx is offline and cannot list cluster namespaces (try: kubectl get namespaces)\n%s\n", name, namespaceUsage)
+		return 2
+	}
 	if !kube.ValidNamespace(name) {
 		_, _ = fmt.Fprintf(stderr, "omnictx: invalid namespace %q (must be a DNS-1123 label)\n%s\n", name, namespaceUsage)
 		return 2

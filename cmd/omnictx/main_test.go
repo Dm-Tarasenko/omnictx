@@ -407,6 +407,49 @@ func TestRunNamespaceInvalidName(t *testing.T) {
 	}
 }
 
+// `list` is reserved (for both the `ns` and `namespace` spellings — they share
+// the same dispatch): omnictx is offline and cannot list cluster namespaces,
+// and the natural guess `ns list` must not silently switch to a namespace
+// literally named `list`.
+func TestRunNamespaceListReserved(t *testing.T) {
+	t.Run("rejects list and writes nothing", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 2 {
+			t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr.String())
+		}
+		for _, want := range []string{"reserved", "kubectl get namespaces"} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Errorf("stderr missing %q:\n%s", want, stderr.String())
+			}
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("kubeconfig must not be modified on the reserved word:\n%s", data)
+		}
+	})
+	t.Run("reserved check wins over a missing kubeconfig", func(t *testing.T) {
+		t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 2 {
+			t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr.String())
+		}
+	})
+	// Only `list` is reserved: ns has no toggle form, so on/off stay ordinary
+	// namespace names.
+	t.Run("off is an ordinary namespace name", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"off"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		want := strings.Replace(kindKubeconfig, "namespace: payments", "namespace: off", 1)
+		if string(data) != want {
+			t.Errorf("kubeconfig after switch:\n%s\nwant:\n%s", data, want)
+		}
+	})
+}
+
 func TestRunNamespaceTooManyArgs(t *testing.T) {
 	kubeTestConfig(t, kindKubeconfig)
 	var stdout, stderr strings.Builder
