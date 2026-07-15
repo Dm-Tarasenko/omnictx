@@ -4,8 +4,10 @@
 `omnictx` is a Go CLI that prints a prompt segment with the active **cloud**
 (Azure / AWS / GCP — exactly one) and the current **kube-context** + namespace,
 and can also **switch** them (kube-context, gcloud configuration, Azure
-subscription). It works on local config files directly, without
-kubectl/az/aws/gcloud and without network access — including the switches.
+subscription). Render mode — the code that runs on every shell prompt — works
+on local config files directly, without kubectl/az/aws/gcloud and without
+network access. Explicit interactive subcommands may shell out to `kubectl`;
+today `ns list` is the ONLY such online path (the switches stay file-based).
 
 ## Core invariant
 RENDER MODE NEVER breaks the prompt line and never writes anything: any error →
@@ -47,11 +49,13 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   `kube [<context>|list|on|off]` (switch current-context in kubeconfig / print
   current / list all / toggle the kube segment via config key `kube:`; reserved
   words list|on|off; unknown context → exit 2, unparsable target → exit 1),
-  `ns [<name>]` (alias `namespace`; switch the namespace of the active
+  `ns [<name>|list]` (alias `namespace`; switch the namespace of the active
   kube-context in the kubeconfig / print current; name validated as a DNS-1123
   label, invalid → exit 2; no active context / context not defined / broken
-  source → exit 1; offline — no `list` form, `ns list` sets the namespace to
-  `list`).
+  source → exit 1; `list` execs `kubectl get namespaces -o name
+  --request-timeout=10s` — the only online code path in the binary — and prints
+  a CURRENT/NAME table marking the active context's namespace (`default` when
+  unset); kubectl missing or failing → stderr passthrough, exit 1, no write).
 - internal/cloud — Provider interface + active-cloud Select (azure|aws|gcp|auto|none).
 - internal/azure — Azure provider: active subscription from azureProfile.json (UTF-8 BOM).
 - internal/aws — AWS provider: profile (+region) from ~/.aws/config (offline; no STS).

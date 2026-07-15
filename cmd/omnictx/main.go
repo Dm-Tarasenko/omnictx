@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -156,11 +157,12 @@ Subcommands:
                     all available contexts; on/off toggle the kube segment in the
                     config file and never touch kubeconfig (OMNICTX_KUBE overrides
                     per-session)
-  ns [<name>]       (alias: namespace)
+  ns [<name>|list]  (alias: namespace)
                     switch the namespace of the active kube-context (rewrites
                     that context entry in kubeconfig); no argument prints the
-                    current namespace. "list" is reserved and rejected — omnictx
-                    is offline and cannot list cluster namespaces
+                    current namespace. "list" queries the cluster via kubectl
+                    (needs kubectl on PATH) — the only online subcommand; the
+                    prompt render itself always stays offline
 
 Flags:
   --version                   print version and exit
@@ -412,18 +414,18 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const namespaceUsage = "usage: omnictx ns [<name>]"
+const namespaceUsage = "usage: omnictx ns [<name>|list]"
 
-// runNamespace handles `omnictx ns [<name>]` (alias: `namespace`). No argument
-// prints the active context's namespace (empty prints nothing). One argument
-// switches the namespace of the active kube-context by rewriting its entry in
-// the kubeconfig — the second omnictx path that writes to a file it does not
-// own, and only on an explicit user command. The name is validated as a
-// DNS-1123 label first (invalid → exit 2, no write); kubeconfig-state problems
-// (no active context, context not defined, unlocatable/broken) fail loudly with
-// exit 1. There is deliberately no offline `list` form — omnictx never contacts
-// the cluster — but `list` is reserved so the natural guess `ns list` cannot
-// silently switch to a namespace literally named `list` (exit 2, no write).
+// runNamespace handles `omnictx ns [<name>|list]` (alias: `namespace`). No
+// argument prints the active context's namespace (empty prints nothing). One
+// argument switches the namespace of the active kube-context by rewriting its
+// entry in the kubeconfig — the second omnictx path that writes to a file it
+// does not own, and only on an explicit user command. The name is validated as
+// a DNS-1123 label first (invalid → exit 2, no write); kubeconfig-state
+// problems (no active context, context not defined, unlocatable/broken) fail
+// loudly with exit 1. `list` is a subcommand word, never a switch target: it
+// queries the cluster via kubectl (see runNamespaceList) — render mode stays
+// strictly offline and shares no code with that path.
 func runNamespace(args []string, stdout, stderr io.Writer) int {
 	home, _ := os.UserHomeDir()
 
@@ -440,8 +442,7 @@ func runNamespace(args []string, stdout, stderr io.Writer) int {
 
 	name := args[0]
 	if name == "list" {
-		_, _ = fmt.Fprintf(stderr, "omnictx: %q is reserved: omnictx is offline and cannot list cluster namespaces (try: kubectl get namespaces)\n%s\n", name, namespaceUsage)
-		return 2
+		return runNamespaceList(stdout, stderr, home)
 	}
 	if !kube.ValidNamespace(name) {
 		_, _ = fmt.Fprintf(stderr, "omnictx: invalid namespace %q (must be a DNS-1123 label)\n%s\n", name, namespaceUsage)
@@ -451,6 +452,52 @@ func runNamespace(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 		return 1
 	}
+	return 0
+}
+
+// runNamespaceList handles `omnictx ns list` — the ONLY online code path in
+// the binary: the namespace list lives in the cluster, so it shells out to
+// kubectl (time-bounded by --request-timeout so a dead VPN fails in seconds).
+// Render mode never reaches this code and stays strictly offline. The result
+// is a CURRENT/NAME table marking the active context's namespace as resolved
+// by the offline kube.Read (`default` when the context sets none). Failures
+// are environment problems, not usage errors: kubectl missing from PATH or
+// exiting non-zero → its stderr passes through with an omnictx line, exit 1.
+// This path never writes any file.
+func runNamespaceList(stdout, stderr io.Writer, home string) int {
+	cmd := exec.Command("kubectl", "get", "namespaces", "-o", "name", "--request-timeout=10s")
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			_, _ = fmt.Fprintln(stderr, "omnictx: ns list needs kubectl on PATH to query the cluster, and kubectl was not found")
+			return 1
+		}
+		_, _ = fmt.Fprintf(stderr, "omnictx: kubectl get namespaces failed: %v\n", err)
+		return 1
+	}
+
+	current := kube.Read(os.LookupEnv, home).Namespace
+	if current == "" {
+		// Kubernetes' effective default when the context sets no namespace.
+		current = "default"
+	}
+
+	var rows [][]string
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		// `-o name` prints one `namespace/<name>` per line; skip anything else.
+		name := strings.TrimPrefix(strings.TrimSpace(line), "namespace/")
+		if name == "" || name == strings.TrimSpace(line) {
+			continue
+		}
+		marker := ""
+		if name == current {
+			marker = "*"
+		}
+		rows = append(rows, []string{marker, name})
+	}
+	printTable(stdout, []string{"CURRENT", "NAME"}, rows)
 	return 0
 }
 

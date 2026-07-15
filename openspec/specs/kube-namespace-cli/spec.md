@@ -3,16 +3,16 @@
 ## Purpose
 
 The `omnictx ns` subcommand (alias `namespace`): switching the active context's
-namespace (`omnictx ns <name>`) and printing the current namespace (no argument).
+namespace (`omnictx ns <name>`), printing the current namespace (no argument),
+and listing the cluster's namespaces (`omnictx ns list`, via kubectl).
 Like `kube <context>`, the write touches a file omnictx does not own — the
 kubeconfig — and only on an explicit user command, with DNS-1123 validation,
 single-line surgery (replace in place, or insert into the active context's
 `context:` mapping), and an atomic write that preserves permissions and every
-other byte. There is no offline namespace listing (omnictx never contacts the
-cluster). Render mode stays strictly read-only and never breaks the prompt.
-
+other byte. `ns list` is the only online code path in the binary: it shells out
+to `kubectl get namespaces` with a bounded request timeout and never writes.
+Render mode stays strictly read-only and offline, and never breaks the prompt.
 ## Requirements
-
 ### Requirement: Switch the active context's namespace via `omnictx ns <name>`
 The CLI SHALL provide a subcommand `omnictx ns <name>` (with `namespace` as an
 accepted alias for `ns`) that sets the
@@ -108,32 +108,6 @@ kubeconfig is readable, it SHALL print nothing on stdout and exit 0.
 - **WHEN** no kubeconfig file is readable and the user runs `omnictx ns`
 - **THEN** stdout is empty and the exit code is 0
 
-### Requirement: No offline namespace listing
-Because omnictx never contacts the cluster, the subcommand SHALL NOT provide a
-form that enumerates cluster namespaces, and `list` SHALL be a reserved word
-rather than an acceptable namespace name: `omnictx ns list` (and the
-`namespace` alias) SHALL print an error to stderr explaining that omnictx is
-offline and cannot list cluster namespaces (pointing the user at
-`kubectl get namespaces`), SHALL NOT modify any file, and SHALL exit with
-code 2. Only `list` is reserved; `on` and `off` remain ordinary valid
-namespace names because `ns` has no toggle form.
-
-#### Scenario: `list` is reserved, not a namespace name
-- **WHEN** the active context is resolvable and the user runs `omnictx ns list`
-- **THEN** stderr explains that omnictx cannot list cluster namespaces offline (mentioning `kubectl get namespaces`), no file is modified, and the exit code is 2
-
-#### Scenario: `namespace list` alias is rejected identically
-- **WHEN** the user runs `omnictx namespace list`
-- **THEN** the result is identical to `omnictx ns list` (stderr error, no write, exit code 2)
-
-#### Scenario: `list` is rejected before any kubeconfig state check
-- **WHEN** no kubeconfig file is readable and the user runs `omnictx ns list`
-- **THEN** the reserved-word error is printed to stderr and the exit code is 2 (not the exit-1 broken-source path)
-
-#### Scenario: `on` and `off` stay ordinary namespace names
-- **WHEN** the active context is resolvable and the user runs `omnictx ns off`
-- **THEN** the active context's namespace is set to `off` and the exit code is 0
-
 ### Requirement: Render mode stays read-only and never breaks the prompt
 Kubeconfig writes SHALL happen only in the `ns <name>` subcommand on an explicit
 user command. Render mode SHALL never write to any kubeconfig file, and
@@ -147,3 +121,44 @@ SHALL be unaffected by this change.
 #### Scenario: Too many arguments is a usage error
 - **WHEN** the user runs `omnictx ns a b`
 - **THEN** a usage message is printed to stderr and the exit code is 2
+
+### Requirement: List cluster namespaces via `omnictx ns list`
+The subcommand SHALL provide a `list` form: `omnictx ns list` (and the
+`namespace` alias) SHALL run `kubectl get namespaces -o name` with a bounded
+request timeout (`--request-timeout=10s`) and print the resulting namespace
+names to stdout as a table with columns `CURRENT` and `NAME`, marking with `*`
+the row that equals the active context's namespace as resolved by the existing
+offline read logic (when the active context sets no namespace, the `default`
+row SHALL be marked). Output lines from kubectl that do not match the
+`namespace/<name>` form SHALL be skipped. On success the exit code SHALL be 0
+and no file SHALL be modified. `list` SHALL remain unavailable as a switch
+target: `omnictx ns list` never writes a namespace named `list`. Only `list`
+is a subcommand word; `on` and `off` remain ordinary valid namespace names
+because `ns` has no toggle form. This is the only online code path in the
+binary: render mode and every other subcommand SHALL NOT invoke kubectl or
+perform network access.
+
+#### Scenario: Namespaces are listed with the current one marked
+- **WHEN** the active context's namespace is `payments`, and `kubectl get namespaces -o name` prints `namespace/default`, `namespace/payments`, and `namespace/staging`
+- **THEN** stdout is a CURRENT/NAME table listing `default`, `payments`, and `staging` with `*` on the `payments` row, the exit code is 0, and no file is modified
+
+#### Scenario: No namespace set marks the default row
+- **WHEN** the active context has no `namespace` key and `kubectl` reports namespaces including `default`
+- **THEN** the `default` row is marked with `*` and the exit code is 0
+
+#### Scenario: `namespace list` alias behaves identically
+- **WHEN** the user runs `omnictx namespace list`
+- **THEN** the result is identical to `omnictx ns list`
+
+#### Scenario: kubectl is not installed
+- **WHEN** `kubectl` cannot be found on `PATH` and the user runs `omnictx ns list`
+- **THEN** stderr explains that kubectl is required for `ns list`, no file is modified, and the exit code is 1
+
+#### Scenario: kubectl fails
+- **WHEN** `kubectl get namespaces` exits non-zero (for example the cluster is unreachable or auth fails)
+- **THEN** kubectl's stderr is passed through with an omnictx error line, no file is modified, and the exit code is 1
+
+#### Scenario: `list` never becomes a namespace name
+- **WHEN** the user runs `omnictx ns list`
+- **THEN** no kubeconfig file is modified, regardless of whether the kubectl call succeeds
+
