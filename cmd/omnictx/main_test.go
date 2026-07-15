@@ -338,7 +338,7 @@ func TestUsageListsNamespaceSubcommand(t *testing.T) {
 	printUsage(&sb)
 	out := sb.String()
 
-	for _, want := range []string{"ns [<name>]", "alias: namespace", "cannot list cluster namespaces"} {
+	for _, want := range []string{"ns [<name>|list]", "alias: namespace", "queries the cluster via kubectl", "stays offline"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("usage missing %q\n---\n%s", want, out)
 		}
@@ -405,6 +405,131 @@ func TestRunNamespaceInvalidName(t *testing.T) {
 	if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
 		t.Errorf("kubeconfig must not be modified on a usage error:\n%s", data)
 	}
+}
+
+// fakeKubectl installs an executable `kubectl` shell script into a fresh temp
+// dir and prepends that dir to PATH, so `ns list` tests stay offline and
+// hermetic.
+func fakeKubectl(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// `ns list` (for both the `ns` and `namespace` spellings — they share the same
+// dispatch) shells out to kubectl and prints the cluster's namespaces; it is a
+// subcommand word, never a switch target, so it must never write anything.
+func TestRunNamespaceList(t *testing.T) {
+	const threeNamespaces = `echo "namespace/default"
+echo "namespace/payments"
+echo "namespace/staging"
+echo "not-a-namespace-line"`
+
+	t.Run("lists namespaces and marks the current one", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig) // active namespace: payments
+		fakeKubectl(t, threeNamespaces)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		lines := strings.Split(strings.TrimRight(stdout.String(), "\n"), "\n")
+		if len(lines) != 4 { // header + 3 namespaces; the garbage line is skipped
+			t.Fatalf("want header + 3 rows, got %d lines:\n%s", len(lines), stdout.String())
+		}
+		if !strings.HasPrefix(lines[0], "CURRENT") || !strings.Contains(lines[0], "NAME") {
+			t.Errorf("header = %q, want CURRENT/NAME", lines[0])
+		}
+		for _, l := range lines[1:] {
+			marked := strings.HasPrefix(l, "*")
+			if strings.Contains(l, "payments") != marked {
+				t.Errorf("only the payments row must carry the * marker: %q", l)
+			}
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("kubeconfig must not be modified by ns list:\n%s", data)
+		}
+	})
+
+	t.Run("marks default when the context sets no namespace", func(t *testing.T) {
+		cfg := strings.Replace(kindKubeconfig, "      namespace: payments\n", "", 1)
+		kubeTestConfig(t, cfg)
+		fakeKubectl(t, threeNamespaces)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		for l := range strings.SplitSeq(stdout.String(), "\n") {
+			if strings.HasPrefix(l, "*") && !strings.Contains(l, "default") {
+				t.Errorf("marker on %q, want the default row", l)
+			}
+			if strings.Contains(l, "default") && !strings.HasPrefix(l, "*") {
+				t.Errorf("default row %q must carry the * marker", l)
+			}
+		}
+	})
+
+	t.Run("kubectl failure passes stderr through and exits 1", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		fakeKubectl(t, `echo "error: unable to connect to the server" >&2
+exit 1`)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr.String())
+		}
+		for _, want := range []string{"unable to connect", "omnictx:"} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Errorf("stderr missing %q:\n%s", want, stderr.String())
+			}
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("kubeconfig must not be modified on kubectl failure:\n%s", data)
+		}
+	})
+
+	t.Run("kubectl missing from PATH exits 1", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		t.Setenv("PATH", t.TempDir()) // no kubectl anywhere
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "kubectl") {
+			t.Errorf("stderr must name kubectl as the missing tool:\n%s", stderr.String())
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("kubeconfig must not be modified when kubectl is missing:\n%s", data)
+		}
+	})
+
+	t.Run("list works without any kubeconfig (marks default)", func(t *testing.T) {
+		t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+		fakeKubectl(t, threeNamespaces)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"list"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "*") {
+			t.Errorf("default row should be marked even without a kubeconfig:\n%s", stdout.String())
+		}
+	})
+
+	// Only `list` is a subcommand word: ns has no toggle form, so on/off stay
+	// ordinary namespace names.
+	t.Run("off is an ordinary namespace name", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		if code := runNamespace([]string{"off"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		want := strings.Replace(kindKubeconfig, "namespace: payments", "namespace: off", 1)
+		if string(data) != want {
+			t.Errorf("kubeconfig after switch:\n%s\nwant:\n%s", data, want)
+		}
+	})
 }
 
 func TestRunNamespaceTooManyArgs(t *testing.T) {
