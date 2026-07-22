@@ -34,11 +34,15 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   flags, `--flag` double-dash display) and exits 0.
   Only flag exposed in render mode: `--shell <bash|zsh|none>` (supplied by `init`,
   not persisted in config). All other settings via env vars or config file.
-  Subcommands: `init <bash|zsh>`, `on` / `off` (persist enabled state to config),
+  Subcommands: `init <bash|zsh>`, `on` / `off` (persist enabled state to config;
+  `on` means "show everything" — it also turns hidden parts back on, rewriting
+  `kube: false` → `true` and `cloud: none` → `auto` while a concrete provider
+  pin stays untouched; `off` only sets the mute),
   `cloud [azure|aws|gcp|auto|none|on|off]` (persist active cloud to config; `on`/`off`
   alias `auto`/`none` — a pin is not remembered across off/on; the literal `on`
-  additionally persists `enabled: true` so the slot reappears after `omnictx off`
-  (plain `auto` and `off` never touch `enabled`); no argument prints
+  issued while the global mute is persisted (`enabled: false`) lifts the mute
+  exposing ONLY the cloud slot: it writes `enabled: true` AND `kube: false`;
+  plain `auto` and `off` never touch `enabled`; no argument prints
   the effective value; invalid value → usage error, exit 2),
   `cloud [azure|aws|gcp] list` (offline read-only table of local accounts: AWS
   profiles from config+credentials names, gcloud configurations, Azure
@@ -50,7 +54,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   excluded — prints `export AWS_PROFILE=<x>` hint, exit 2),
   `kube [<context>|list|on|off]` (switch current-context in kubeconfig / print
   current / list all / toggle the kube segment via config key `kube:`; `on`
-  additionally persists `enabled: true` — `off` never touches `enabled`; reserved
+  issued while the global mute is persisted (`enabled: false`) lifts the mute
+  exposing ONLY the kube segment: it writes `enabled: true` AND `cloud: none` —
+  `off` never touches `enabled`; reserved
   words list|on|off; unknown context → exit 2, unparsable target → exit 1),
   `ns [<name>|list]` (alias `namespace`; switch the namespace of the active
   kube-context in the kubeconfig / print current; name validated as a DNS-1123
