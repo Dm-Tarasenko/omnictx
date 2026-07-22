@@ -735,7 +735,7 @@ func TestRunCloudOnOffAliases(t *testing.T) {
 		}
 	})
 
-	t.Run("on lifts the global mute, off leaves it alone", func(t *testing.T) {
+	t.Run("on lifts the global mute exposing only cloud, off leaves the mute alone", func(t *testing.T) {
 		path := cloudTestConfig(t)
 		if err := os.WriteFile(path, []byte("enabled: false\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -753,10 +753,29 @@ func TestRunCloudOnOffAliases(t *testing.T) {
 			t.Fatalf("cloud on: exit %d (stderr: %s)", code, stderr.String())
 		}
 		data, _ := os.ReadFile(path)
-		for _, want := range []string{"enabled: true", "cloud: auto"} {
+		for _, want := range []string{"enabled: true", "cloud: auto", "kube: false"} {
 			if !strings.Contains(string(data), want) {
-				t.Errorf("after cloud on, config missing %q:\n%s", want, data)
+				t.Errorf("after cloud on from muted state, config missing %q:\n%s", want, data)
 			}
+		}
+	})
+
+	t.Run("on without the mute touches only cloud", func(t *testing.T) {
+		path := cloudTestConfig(t)
+		if err := os.WriteFile(path, []byte("cloud: none\nkube: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+
+		if code := runCloud([]string{"on"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("cloud on: exit %d (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		if !strings.Contains(string(data), "cloud: auto") {
+			t.Errorf("after cloud on, config missing cloud: auto:\n%s", data)
+		}
+		if !strings.Contains(string(data), "kube: true") {
+			t.Errorf("cloud on without the mute must not touch kube:\n%s", data)
 		}
 	})
 
@@ -823,13 +842,67 @@ func TestRunKubeOnOffToggle(t *testing.T) {
 	}
 }
 
-// `kube on` must lift the global mute (omnictx off) so the segment actually
-// shows up; `kube off` must leave the mute untouched.
+// `omnictx on` means "show everything": it lifts the mute AND turns hidden
+// parts back on (kube: false -> true, cloud: none -> auto), while a concrete
+// provider pin stays untouched. `omnictx off` only sets the mute.
+func TestRunEnableOnRestoresBothParts(t *testing.T) {
+	t.Run("hidden parts are turned back on", func(t *testing.T) {
+		path := cloudTestConfig(t)
+		if err := os.WriteFile(path, []byte("enabled: false\nkube: false\ncloud: none\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := runEnable(true); code != 0 {
+			t.Fatalf("omnictx on: exit %d", code)
+		}
+		data, _ := os.ReadFile(path)
+		for _, want := range []string{"enabled: true", "kube: true", "cloud: auto"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("after omnictx on, config missing %q:\n%s", want, data)
+			}
+		}
+	})
+
+	t.Run("a provider pin survives on", func(t *testing.T) {
+		path := cloudTestConfig(t)
+		if err := os.WriteFile(path, []byte("enabled: false\ncloud: azure\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := runEnable(true); code != 0 {
+			t.Fatalf("omnictx on: exit %d", code)
+		}
+		data, _ := os.ReadFile(path)
+		for _, want := range []string{"enabled: true", "cloud: azure"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("after omnictx on, config missing %q:\n%s", want, data)
+			}
+		}
+	})
+
+	t.Run("off only sets the mute", func(t *testing.T) {
+		path := cloudTestConfig(t)
+		if err := os.WriteFile(path, []byte("kube: false\ncloud: none\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if code := runEnable(false); code != 0 {
+			t.Fatalf("omnictx off: exit %d", code)
+		}
+		data, _ := os.ReadFile(path)
+		for _, want := range []string{"enabled: false", "kube: false", "cloud: none"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("after omnictx off, config missing %q:\n%s", want, data)
+			}
+		}
+	})
+}
+
+// `kube on` while globally muted (omnictx off) must lift the mute exposing
+// ONLY the kube segment — the cloud slot goes to none; `kube off` must leave
+// the mute untouched, and `kube on` without the mute must not touch cloud.
 func TestRunKubeOnLiftsGlobalMute(t *testing.T) {
 	kubeTestConfig(t, kindKubeconfig)
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	t.Setenv("OMNICTX_CONFIG", cfgPath)
-	if err := os.WriteFile(cfgPath, []byte("enabled: false\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("enabled: false\ncloud: auto\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -845,9 +918,23 @@ func TestRunKubeOnLiftsGlobalMute(t *testing.T) {
 		t.Fatalf("kube on: exit %d (stderr: %s)", code, stderr.String())
 	}
 	data, _ := os.ReadFile(cfgPath)
-	for _, want := range []string{"enabled: true", "kube: true"} {
+	for _, want := range []string{"enabled: true", "kube: true", "cloud: none"} {
 		if !strings.Contains(string(data), want) {
-			t.Errorf("after kube on, config missing %q:\n%s", want, data)
+			t.Errorf("after kube on from muted state, config missing %q:\n%s", want, data)
+		}
+	}
+
+	// Not muted anymore: kube on must touch only kube, cloud stays as-is.
+	if code := runCloud([]string{"on"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("cloud on: exit %d (stderr: %s)", code, stderr.String())
+	}
+	if code := runKube([]string{"on"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("kube on: exit %d (stderr: %s)", code, stderr.String())
+	}
+	data, _ = os.ReadFile(cfgPath)
+	for _, want := range []string{"enabled: true", "kube: true", "cloud: auto"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("after cloud on + kube on, config missing %q:\n%s", want, data)
 		}
 	}
 }
@@ -895,7 +982,7 @@ func TestGatherSkipsKubeWhenDisabled(t *testing.T) {
 	}
 }
 
-// Regression: setConfigKey must never match a nested key (colors.kube broke
+// Regression: setConfigKeys must never match a nested key (colors.kube broke
 // the user's YAML when `kube off` replaced "  kube: cyan" inside colors).
 func TestSetConfigKeyIgnoresNestedKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -904,8 +991,8 @@ func TestSetConfigKeyIgnoresNestedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := setConfigKey(path, "kube", "false"); err != nil {
-		t.Fatalf("setConfigKey: %v", err)
+	if err := setConfigKeys(path, "kube", "false"); err != nil {
+		t.Fatalf("setConfigKeys: %v", err)
 	}
 
 	data, _ := os.ReadFile(path)

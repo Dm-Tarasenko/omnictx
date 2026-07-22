@@ -46,7 +46,7 @@ omnictx on|off                # master toggle (persists to the config file)
 
 omnictx cloud                 # show the effective active-cloud selection
 omnictx cloud aws             # pin AWS as the displayed cloud (azure|aws|gcp|auto|none)
-omnictx cloud on|off          # show/hide just the cloud slot (on also re-enables omnictx globally)
+omnictx cloud on|off          # show/hide just the cloud slot
 omnictx cloud aws list        # offline table of local AWS profiles (also: gcp, azure)
 omnictx cloud gcp work        # activate a gcloud configuration
 omnictx cloud azure prod      # switch the default Azure subscription (name/id/alias)
@@ -54,7 +54,7 @@ omnictx cloud azure prod      # switch the default Azure subscription (name/id/a
 omnictx kube                  # show the current kube-context
 omnictx kube list             # table of contexts across $KUBECONFIG files
 omnictx kube prod-cluster     # switch the current kube-context
-omnictx kube on|off           # show/hide the kube segment (namespace follows; on also re-enables omnictx globally)
+omnictx kube on|off           # show/hide the kube segment (namespace follows)
 
 omnictx ns                    # show the active context's namespace
 omnictx ns staging            # switch the active context's namespace (alias: namespace)

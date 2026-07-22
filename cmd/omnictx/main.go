@@ -139,9 +139,8 @@ Subcommands:
   on / off          persist enabled: true/false to config file (affects all future shells)
   cloud [azure|aws|gcp|auto|none|on|off]
                     persist the active cloud to config file; off hides the slot,
-                    on returns to auto-detect and re-enables omnictx globally
-                    (enabled: true); without an argument prints the effective
-                    value (OMNICTX_CLOUD overrides per-session)
+                    on returns to auto-detect; without an argument prints the
+                    effective value (OMNICTX_CLOUD overrides per-session)
   cloud [azure|aws|gcp] list
                     offline table of that provider's local accounts (AWS profiles,
                     gcloud configurations, Azure subscriptions); bare "cloud list"
@@ -156,8 +155,8 @@ Subcommands:
                     switch the current kube-context (rewrites current-context in
                     kubeconfig); no argument prints the current one, "list" shows
                     all available contexts; on/off toggle the kube segment in the
-                    config file and never touch kubeconfig (on also re-enables
-                    omnictx globally; OMNICTX_KUBE overrides per-session)
+                    config file and never touch kubeconfig (OMNICTX_KUBE overrides
+                    per-session)
   ns [<name>|list]  (alias: namespace)
                     switch the namespace of the active kube-context (rewrites
                     that context entry in kubeconfig); no argument prints the
@@ -205,51 +204,60 @@ func globalConfigPath() string {
 	return filepath.Join(home, ".config", "omnictx", "config.yaml")
 }
 
-// setConfigKey updates (or creates) the config file, changing only the line
-// for the given key and preserving all other content including comments.
-func setConfigKey(path, key, value string) error {
-	newLine := key + ": " + value
-
+// setConfigKeys updates (or creates) the config file, changing only the
+// lines for the given key/value pairs and preserving all other content
+// including comments. One read, one write, regardless of how many keys.
+func setConfigKeys(path string, pairs ...string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			return os.WriteFile(path, []byte(newLine+"\n"), 0o644)
+		if !os.IsNotExist(err) {
+			return err
 		}
-		return err
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
 	}
 
-	prefix := key + ":"
 	lines := strings.Split(string(data), "\n")
-	replaced := false
-	for i, l := range lines {
-		// Column-0 prefix only: an indented "key:" belongs to a nested block
-		// (e.g. colors.kube), and replacing it would corrupt the YAML.
-		if strings.HasPrefix(l, prefix) {
-			lines[i] = newLine
-			replaced = true
-			break
+	for i := 0; i+1 < len(pairs); i += 2 {
+		key, value := pairs[i], pairs[i+1]
+		newLine := key + ": " + value
+		prefix := key + ":"
+		replaced := false
+		for j, l := range lines {
+			// Column-0 prefix only: an indented "key:" belongs to a nested
+			// block (e.g. colors.kube), and replacing it would corrupt the YAML.
+			if strings.HasPrefix(l, prefix) {
+				lines[j] = newLine
+				replaced = true
+				break
+			}
 		}
-	}
-	if !replaced {
-		lines = append([]string{newLine}, lines...)
+		if !replaced {
+			lines = append([]string{newLine}, lines...)
+		}
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
-func setGlobalEnabled(path string, enabled bool) error {
-	val := "true"
-	if !enabled {
-		val = "false"
-	}
-	return setConfigKey(path, "enabled", val)
-}
-
-// runEnable handles `omnictx on` and `omnictx off`.
+// runEnable handles `omnictx on` and `omnictx off`. `on` means "show
+// everything": besides lifting the mute it turns hidden parts back on —
+// kube: false becomes true, cloud: none becomes auto (a concrete provider
+// pin is already visible and stays untouched). `off` only sets the mute.
 func runEnable(enabled bool) int {
-	if err := setGlobalEnabled(globalConfigPath(), enabled); err != nil {
+	path := globalConfigPath()
+	pairs := []string{"enabled", "false"}
+	if enabled {
+		pairs = []string{"enabled", "true"}
+		t := config.ReadFileToggles(path)
+		if !t.Kube {
+			pairs = append(pairs, "kube", "true")
+		}
+		if t.Cloud == config.CloudNone {
+			pairs = append(pairs, "cloud", config.CloudAuto)
+		}
+	}
+	if err := setConfigKeys(path, pairs...); err != nil {
 		fmt.Fprintf(os.Stderr, "omnictx: %v\n", err)
 		return 1
 	}
@@ -326,15 +334,15 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 	v := strings.ToLower(strings.TrimSpace(args[0]))
 	// on/off are display-toggle aliases: off hides the slot, on returns to
 	// auto-detect (a previous provider pin is not remembered). The literal
-	// `on` also lifts the global mute (enabled: true) so the slot actually
-	// shows up after `omnictx off`; plain `cloud auto` does not — it only
-	// sets the value. `off` never touches enabled: the global mute is
-	// released only by an explicit "show me" command.
-	enableGlobal := false
+	// `on` while globally muted (omnictx off) lifts the mute but must expose
+	// only the part being turned on: the kube segment stays hidden
+	// (kube: false) until its own `kube on`. Plain `cloud auto` and `off`
+	// never touch the mute.
+	isOn := false
 	switch v {
 	case "on":
 		v = config.CloudAuto
-		enableGlobal = true
+		isOn = true
 	case "off":
 		v = config.CloudNone
 	}
@@ -345,15 +353,13 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := setConfigKey(globalConfigPath(), "cloud", v); err != nil {
+	pairs := []string{"cloud", v}
+	if isOn && !config.ReadFileToggles(globalConfigPath()).Enabled {
+		pairs = append(pairs, "kube", "false", "enabled", "true")
+	}
+	if err := setConfigKeys(globalConfigPath(), pairs...); err != nil {
 		_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 		return 1
-	}
-	if enableGlobal {
-		if err := setGlobalEnabled(globalConfigPath(), true); err != nil {
-			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
-			return 1
-		}
 	}
 	return 0
 }
@@ -389,18 +395,16 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 		if args[0] == "off" {
 			val = "false"
 		}
-		if err := setConfigKey(globalConfigPath(), "kube", val); err != nil {
+		// `kube on` while globally muted lifts the mute but must expose only
+		// the part being turned on: the cloud slot stays hidden (cloud: none)
+		// until its own `cloud on`. `kube off` never touches the mute.
+		pairs := []string{"kube", val}
+		if args[0] == "on" && !config.ReadFileToggles(globalConfigPath()).Enabled {
+			pairs = append(pairs, "cloud", config.CloudNone, "enabled", "true")
+		}
+		if err := setConfigKeys(globalConfigPath(), pairs...); err != nil {
 			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 			return 1
-		}
-		// `kube on` also lifts the global mute (enabled: true) so the segment
-		// actually shows up after `omnictx off`; `kube off` never touches
-		// enabled — the mute is released only by an explicit "show me" command.
-		if args[0] == "on" {
-			if err := setGlobalEnabled(globalConfigPath(), true); err != nil {
-				_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
-				return 1
-			}
 		}
 		return 0
 	}
@@ -587,7 +591,7 @@ func warnAll(stderr io.Writer, notes []string) {
 // switch, so the prompt immediately shows the provider that was just switched
 // to (instead of whatever the previous pin/auto-detection displayed).
 func pinCloudAfterUse(provider string, stderr io.Writer) int {
-	if err := setConfigKey(globalConfigPath(), "cloud", provider); err != nil {
+	if err := setConfigKeys(globalConfigPath(), "cloud", provider); err != nil {
 		_, _ = fmt.Fprintf(stderr, "omnictx: account switched, but pinning the cloud failed: %v\n", err)
 		return 1
 	}

@@ -125,6 +125,36 @@ func Resolve(flags Flags, lookupEnv LookupEnv, home string) (Config, []string) {
 	return cfg, debug
 }
 
+// FileToggles is the display state persisted in the config file — what the
+// interactive on/off subcommands base their decisions on. Deliberately
+// file-only: env overrides are session-scoped and must not leak into
+// persisted state. A missing file, broken YAML, or absent keys yield the
+// defaults (enabled, kube shown, cloud "" = unset).
+type FileToggles struct {
+	Enabled bool
+	Kube    bool
+	Cloud   string
+}
+
+// ReadFileToggles reads the persisted display state from the config file.
+func ReadFileToggles(path string) FileToggles {
+	t := FileToggles{Enabled: true, Kube: true}
+	fc, _, ok := loadFile(path)
+	if !ok {
+		return t
+	}
+	if fc.Enabled != nil {
+		t.Enabled = *fc.Enabled
+	}
+	if fc.Kube != nil {
+		t.Kube = *fc.Kube
+	}
+	if fc.Cloud != nil {
+		t.Cloud = *fc.Cloud
+	}
+	return t
+}
+
 // resolveConfigPath applies precedence (env > default) to the config path.
 func resolveConfigPath(lookupEnv LookupEnv, home string) string {
 	if v, ok := lookupEnv("OMNICTX_CONFIG"); ok && v != "" {
