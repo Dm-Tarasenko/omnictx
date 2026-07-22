@@ -139,8 +139,9 @@ Subcommands:
   on / off          persist enabled: true/false to config file (affects all future shells)
   cloud [azure|aws|gcp|auto|none|on|off]
                     persist the active cloud to config file; off hides the slot,
-                    on returns to auto-detect; without an argument prints the
-                    effective value (OMNICTX_CLOUD overrides per-session)
+                    on returns to auto-detect and re-enables omnictx globally
+                    (enabled: true); without an argument prints the effective
+                    value (OMNICTX_CLOUD overrides per-session)
   cloud [azure|aws|gcp] list
                     offline table of that provider's local accounts (AWS profiles,
                     gcloud configurations, Azure subscriptions); bare "cloud list"
@@ -155,8 +156,8 @@ Subcommands:
                     switch the current kube-context (rewrites current-context in
                     kubeconfig); no argument prints the current one, "list" shows
                     all available contexts; on/off toggle the kube segment in the
-                    config file and never touch kubeconfig (OMNICTX_KUBE overrides
-                    per-session)
+                    config file and never touch kubeconfig (on also re-enables
+                    omnictx globally; OMNICTX_KUBE overrides per-session)
   ns [<name>|list]  (alias: namespace)
                     switch the namespace of the active kube-context (rewrites
                     that context entry in kubeconfig); no argument prints the
@@ -324,10 +325,16 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 
 	v := strings.ToLower(strings.TrimSpace(args[0]))
 	// on/off are display-toggle aliases: off hides the slot, on returns to
-	// auto-detect (a previous provider pin is not remembered).
+	// auto-detect (a previous provider pin is not remembered). The literal
+	// `on` also lifts the global mute (enabled: true) so the slot actually
+	// shows up after `omnictx off`; plain `cloud auto` does not — it only
+	// sets the value. `off` never touches enabled: the global mute is
+	// released only by an explicit "show me" command.
+	enableGlobal := false
 	switch v {
 	case "on":
 		v = config.CloudAuto
+		enableGlobal = true
 	case "off":
 		v = config.CloudNone
 	}
@@ -342,6 +349,12 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 		return 1
 	}
+	if enableGlobal {
+		if err := setGlobalEnabled(globalConfigPath(), true); err != nil {
+			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+			return 1
+		}
+	}
 	return 0
 }
 
@@ -351,7 +364,8 @@ const kubeUsage = "usage: omnictx kube [<context>|list|on|off]"
 // the current context; the reserved words (contexts with those literal names
 // are not switchable here) come first: `list` prints all contexts with the
 // current one marked, `on`/`off` persist the kube display toggle to omnictx's
-// own config and never touch a kubeconfig. Any other argument validates
+// own config and never touch a kubeconfig (`on` also re-enables omnictx
+// globally, see below). Any other argument validates
 // against the parsed kubeconfigs and then rewrites current-context via
 // kube.WriteContext. That switch is the only code path in omnictx that writes
 // to a file it does not own — render mode never does.
@@ -378,6 +392,15 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 		if err := setConfigKey(globalConfigPath(), "kube", val); err != nil {
 			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 			return 1
+		}
+		// `kube on` also lifts the global mute (enabled: true) so the segment
+		// actually shows up after `omnictx off`; `kube off` never touches
+		// enabled — the mute is released only by an explicit "show me" command.
+		if args[0] == "on" {
+			if err := setGlobalEnabled(globalConfigPath(), true); err != nil {
+				_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+				return 1
+			}
 		}
 		return 0
 	}
