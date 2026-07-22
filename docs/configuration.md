@@ -27,6 +27,12 @@ config file.
 Boolean env vars (`OMNICTX_ENABLED`, `OMNICTX_ICONS`, `OMNICTX_KUBE`) accept
 `on`/`off` on top of the usual `true`/`false` forms.
 
+`enabled: false` (the master mute) hides everything regardless of the other
+keys. The segment-level `on` commands — `omnictx kube on` and `omnictx cloud
+on` — also persist `enabled: true`, so turning a segment on after `omnictx off`
+makes it actually appear. Their `off` counterparts (and plain `cloud auto`)
+never touch `enabled`.
+
 Segment names accept aliases: `azure`/`az`/`aws`/`gcp` → `cloud`, `k`/`k8s` →
 `kube`, `ns` → `namespace`. Unknown and duplicate entries are dropped while
 preserving order. The concrete cloud provider is chosen by `cloud:`, not by

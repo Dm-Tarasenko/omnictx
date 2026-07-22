@@ -735,6 +735,46 @@ func TestRunCloudOnOffAliases(t *testing.T) {
 		}
 	})
 
+	t.Run("on lifts the global mute, off leaves it alone", func(t *testing.T) {
+		path := cloudTestConfig(t)
+		if err := os.WriteFile(path, []byte("enabled: false\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+
+		if code := runCloud([]string{"off"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("cloud off: exit %d (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(path); !strings.Contains(string(data), "enabled: false") {
+			t.Errorf("cloud off must not touch enabled:\n%s", data)
+		}
+
+		if code := runCloud([]string{"on"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("cloud on: exit %d (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		for _, want := range []string{"enabled: true", "cloud: auto"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("after cloud on, config missing %q:\n%s", want, data)
+			}
+		}
+	})
+
+	t.Run("plain auto does not lift the global mute", func(t *testing.T) {
+		path := cloudTestConfig(t)
+		if err := os.WriteFile(path, []byte("enabled: false\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+
+		if code := runCloud([]string{"auto"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("cloud auto: exit %d (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(path); !strings.Contains(string(data), "enabled: false") {
+			t.Errorf("cloud auto must not touch enabled:\n%s", data)
+		}
+	})
+
 	t.Run("off then on loses a provider pin (documented)", func(t *testing.T) {
 		path := cloudTestConfig(t)
 		var stdout, stderr strings.Builder
@@ -780,6 +820,35 @@ func TestRunKubeOnOffToggle(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "kube: true") {
 		t.Errorf("config missing kube: true after kube on:\n%s", data)
+	}
+}
+
+// `kube on` must lift the global mute (omnictx off) so the segment actually
+// shows up; `kube off` must leave the mute untouched.
+func TestRunKubeOnLiftsGlobalMute(t *testing.T) {
+	kubeTestConfig(t, kindKubeconfig)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("OMNICTX_CONFIG", cfgPath)
+	if err := os.WriteFile(cfgPath, []byte("enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := runKube([]string{"off"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("kube off: exit %d (stderr: %s)", code, stderr.String())
+	}
+	if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "enabled: false") {
+		t.Errorf("kube off must not touch enabled:\n%s", data)
+	}
+
+	if code := runKube([]string{"on"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("kube on: exit %d (stderr: %s)", code, stderr.String())
+	}
+	data, _ := os.ReadFile(cfgPath)
+	for _, want := range []string{"enabled: true", "kube: true"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("after kube on, config missing %q:\n%s", want, data)
+		}
 	}
 }
 

@@ -36,7 +36,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   not persisted in config). All other settings via env vars or config file.
   Subcommands: `init <bash|zsh>`, `on` / `off` (persist enabled state to config),
   `cloud [azure|aws|gcp|auto|none|on|off]` (persist active cloud to config; `on`/`off`
-  alias `auto`/`none` — a pin is not remembered across off/on; no argument prints
+  alias `auto`/`none` — a pin is not remembered across off/on; the literal `on`
+  additionally persists `enabled: true` so the slot reappears after `omnictx off`
+  (plain `auto` and `off` never touch `enabled`); no argument prints
   the effective value; invalid value → usage error, exit 2),
   `cloud [azure|aws|gcp] list` (offline read-only table of local accounts: AWS
   profiles from config+credentials names, gcloud configurations, Azure
@@ -47,7 +49,8 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   omnictx config; unknown/ambiguous → exit 2, broken source → exit 1; AWS
   excluded — prints `export AWS_PROFILE=<x>` hint, exit 2),
   `kube [<context>|list|on|off]` (switch current-context in kubeconfig / print
-  current / list all / toggle the kube segment via config key `kube:`; reserved
+  current / list all / toggle the kube segment via config key `kube:`; `on`
+  additionally persists `enabled: true` — `off` never touches `enabled`; reserved
   words list|on|off; unknown context → exit 2, unparsable target → exit 1),
   `ns [<name>|list]` (alias `namespace`; switch the namespace of the active
   kube-context in the kubeconfig / print current; name validated as a DNS-1123
