@@ -47,11 +47,34 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   `cloud [azure|aws|gcp] list` (offline read-only table of local accounts: AWS
   profiles from config+credentials names, gcloud configurations, Azure
   subscriptions; bare `cloud list` = active provider; `list` reserved),
-  `cloud <azure|gcp> <account>` (switch active account: gcp writes
+  `cloud <azure|aws|gcp> <account>` (switch active account: gcp writes
   <gcloud>/active_config, azure flips isDefault in azureProfile.json via JSON
-  round-trip with BOM preserved; name/id or `aliases.<provider>.<short>` from
-  omnictx config; unknown/ambiguous → exit 2, broken source → exit 1; AWS
-  excluded — prints `export AWS_PROFILE=<x>` hint, exit 2),
+  round-trip with BOM preserved, aws validates against config+credentials names
+  and persists `aws_profile:` to omnictx's OWN config — never writes `~/.aws` —
+  with a stderr note that hook-running shells apply it on their next prompt;
+  name/id or `aliases.<provider>.<short>` from omnictx config;
+  unknown/ambiguous → exit 2, broken source → exit 1; `list` and `region` are
+  reserved words for the aws profile argument. Switches change state, never
+  visibility: no switch touches the `enabled`/`kube` display toggles — under a
+  persisted mute the state still flips, shown once `on`/`cloud on`/`kube on`
+  lifts the mute),
+  `cloud aws region [<region>|auto]` (persist an `aws_region:` override —
+  offline shape validation `^[a-z]{2}(-[a-z]+)+-\d+$`, invalid → exit 2; `auto`
+  removes the key idempotently; bare form prints the effective region:
+  AWS_REGION > AWS_DEFAULT_REGION > override > profile config; neither form
+  touches the display toggles),
+  `hook --shell <bash|zsh>` (the per-prompt invocation emitted by `init`
+  snippets; render-mode discipline — never writes, always exit 0. Output is
+  exactly three newline-terminated lines: AWS_PROFILE directive, AWS_REGION
+  directive, prompt segment. Directive encoding: empty = leave alone, `-` =
+  unset, else = export. The pin table lives in Go (aws.Directive): AWS_VAULT
+  set → both empty; env value differing from the `__OMNICTX_AWS_PROFILE` /
+  `__OMNICTX_AWS_REGION` marker = manual pin, never stomped; hook-owned or
+  empty env follows the persisted value, including unset when it was cleared.
+  Line 3 is rendered as if the directives were already applied — no one-cycle
+  lag. The enabled mute empties ONLY line 3: directives keep flowing, because
+  the mute controls display, not state — matching gcp/azure/kube, whose
+  switches take effect under the mute too),
   `kube [<context>|list|on|off]` (switch current-context in kubeconfig / print
   current / list all / toggle the kube segment via config key `kube:`; `on`
   issued while the global mute is persisted (`enabled: false`) lifts the mute
@@ -68,6 +91,10 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
 - internal/cloud — Provider interface + active-cloud Select (azure|aws|gcp|auto|none).
 - internal/azure — Azure provider: active subscription from azureProfile.json (UTF-8 BOM).
 - internal/aws — AWS provider: profile (+region) from ~/.aws/config (offline; no STS).
+  Also the switch-side helpers: ValidateProfile (unknown → typed error for exit 2,
+  unreadable sources → plain error for exit 1), ValidRegion (shape check),
+  EffectiveProfile/EffectiveRegion (env > persisted override > profile config),
+  and Directive (the hook's pin table — pure function, exhaustively table-tested).
 - internal/gcp — GCP provider: active-config project from ~/.config/gcloud (offline).
 - internal/ini — tiny stdlib INI reader shared by aws/gcp (no new dependency).
 - internal/kube — current-context + namespace from kubeconfig ($KUBECONFIG-aware).
@@ -90,9 +117,19 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   segment on top of the segments list; OMNICTX_KUBE is the session override.
   OMNICTX_SHELL is the session-scoped counterpart of `--shell` (the flag,
   supplied by `init`, wins by precedence); `shell` is deliberately NOT a config
-  file key.
+  file key. `aws_profile:` / `aws_region:` are the machine-written AWS pins
+  (config-file only — deliberately no OMNICTX_* env override: AWS's native
+  AWS_PROFILE / AWS_REGION are the session override, honored by the hook's pin
+  logic instead of the merge).
 - internal/shellinit — `init bash|zsh` code generation (go:embed templates).
   Output must be idempotent. No shell functions defined (omnion/omnioff removed).
+  The prompt function consumes the three-line `hook` output and applies the
+  directives verbatim (export value + exported marker / unset both / skip) via
+  quoted parameters — it never evals binary output, and all decisions stay in
+  Go. Binary and snippet ship together: after an upgrade users must re-eval
+  `init` (rc-file eval makes this automatic on new shells); an rc-file
+  `export AWS_PROFILE=...` makes every shell look manually pinned, so global
+  switches never reach it — documented, by design.
 - testdata — fixtures and golden files.
 
 ## Conventions
@@ -106,7 +143,10 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   (current-context from the first file); color escaping for bash and zsh;
   config precedence; idempotent init output; AWS profile/region precedence and
   GCP active-config/project precedence; INI parsing (sections/comments/broken →
-  empty); cloud Select (explicit pin / auto-by-priority / none).
+  empty); cloud Select (explicit pin / auto-by-priority / none); the full
+  aws.Directive pin table (vault / manual pin / hook-owned / cleared); hook
+  three-line contract incl. disabled and broken-config degradation; snippet
+  directive application (export+marker, unset both, manual value untouched).
 
 ## Design decisions (resolved during implementation)
 - The `namespace` segment is visually coupled to `kube` and rendered as

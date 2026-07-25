@@ -53,6 +53,9 @@ func main() {
 			os.Exit(runKube(args[1:], os.Stdout, os.Stderr))
 		case "ns", "namespace":
 			os.Exit(runNamespace(args[1:], os.Stdout, os.Stderr))
+		case "hook":
+			runHook(args[1:], os.Stdout)
+			os.Exit(0)
 		}
 	}
 
@@ -119,9 +122,62 @@ func runRender(args []string) {
 		return
 	}
 
-	data := gather(cfg, home)
+	data := gather(cfg, home, os.LookupEnv)
 	out := render.Render(data, cfg)
 	fmt.Print(out)
+}
+
+// runHook implements the per-prompt hook invocation (`omnictx hook --shell
+// <bash|zsh>`, emitted by `init` snippets): exactly three newline-terminated
+// lines — the AWS_PROFILE directive, the AWS_REGION directive, and the prompt
+// segment. Directive encoding: empty = leave the variable alone, "-" = unset
+// it, anything else = export it. This is render mode with two extra lines, so
+// the core invariant applies in full: never write anything, degrade any error
+// to empty directives and a best-effort segment, always exit 0. The segment is
+// rendered as if the directives were already applied, so the prompt is correct
+// on the same cycle that applies a switch. The enabled mute silences ONLY the
+// segment line: directives keep flowing, because the mute controls display,
+// not state — matching gcp/azure/kube, whose switches take effect under the
+// mute too (their tools read the switched files directly).
+func runHook(args []string, stdout io.Writer) {
+	flags, _, _, ok := parseRenderArgs(args)
+	if !ok {
+		_, _ = fmt.Fprint(stdout, "\n\n\n")
+		return
+	}
+	home, _ := os.UserHomeDir()
+	cfg, _ := config.Resolve(flags, os.LookupEnv, home)
+
+	envValue := func(k string) string { v, _ := os.LookupEnv(k); return v }
+	vault := envValue("AWS_VAULT") != ""
+	profileDir := aws.Directive(cfg.AWSProfile, envValue("AWS_PROFILE"), envValue("__OMNICTX_AWS_PROFILE"), vault)
+	regionDir := aws.Directive(cfg.AWSRegion, envValue("AWS_REGION"), envValue("__OMNICTX_AWS_REGION"), vault)
+
+	out := ""
+	if cfg.Enabled {
+		lookup := directiveLookup(os.LookupEnv, map[string]string{
+			"AWS_PROFILE": profileDir,
+			"AWS_REGION":  regionDir,
+		})
+		out = render.Render(gather(cfg, home, lookup), cfg)
+	}
+	_, _ = fmt.Fprintf(stdout, "%s\n%s\n%s\n", profileDir, regionDir, out)
+}
+
+// directiveLookup overlays pending hook directives on the real environment so
+// the segment reflects the exports/unsets that ship in the same output: an
+// export directive reads as the variable's value, an unset directive hides it,
+// an empty directive falls through to the session env.
+func directiveLookup(base config.LookupEnv, directives map[string]string) config.LookupEnv {
+	return func(k string) (string, bool) {
+		if d, ok := directives[k]; ok && d != "" {
+			if d == aws.DirectiveUnset {
+				return "", false
+			}
+			return d, true
+		}
+		return base(k)
+	}
 }
 
 // printUsage writes the grouped, human-readable help.
@@ -145,12 +201,19 @@ Subcommands:
                     offline table of that provider's local accounts (AWS profiles,
                     gcloud configurations, Azure subscriptions); bare "cloud list"
                     uses the active provider
-  cloud <azure|gcp> <account>
+  cloud <azure|aws|gcp> <account>
                     switch the active account: azure flips isDefault in
                     azureProfile.json (name or id), gcp activates the named
-                    configuration; accepts short aliases from the config file
-                    and pins that provider as the displayed cloud on success.
-                    AWS has no persistent profile — use export AWS_PROFILE=<name>
+                    configuration, aws persists aws_profile in omnictx's own
+                    config — shells running the omnictx hook export it as
+                    AWS_PROFILE on their next prompt (~/.aws is never written;
+                    a manual export AWS_PROFILE=<name> still pins its session);
+                    accepts short aliases from the config file and pins that
+                    provider as the displayed cloud on success
+  cloud aws region [<region>|auto]
+                    persist an aws_region override in the omnictx config, on
+                    top of the active profile's own region; "auto" clears the
+                    override, no argument prints the effective region
   kube [<context>|list|on|off]
                     switch the current kube-context (rewrites current-context in
                     kubeconfig); no argument prints the current one, "list" shows
@@ -240,6 +303,36 @@ func setConfigKeys(path string, pairs ...string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
+// removeConfigKey deletes the top-level line for the given key from the config
+// file, preserving everything else (other keys, comments, nested blocks — the
+// same column-0 discipline as setConfigKeys). Removal is idempotent: a missing
+// file or an absent key is success, and the file is never created.
+func removeConfigKey(path, key string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	prefix := key + ":"
+	lines := strings.Split(string(data), "\n")
+	kept := lines[:0]
+	removed := false
+	for _, l := range lines {
+		if !removed && strings.HasPrefix(l, prefix) {
+			removed = true
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if !removed {
+		return nil
+	}
+	return os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644)
+}
+
 // runEnable handles `omnictx on` and `omnictx off`. `on` means "show
 // everything": besides lifting the mute it turns hidden parts back on —
 // kube: false becomes true, cloud: none becomes auto (a concrete provider
@@ -266,7 +359,8 @@ func runEnable(enabled bool) int {
 
 const cloudUsage = "usage: omnictx cloud [azure|aws|gcp|auto|none|on|off]\n" +
 	"       omnictx cloud [azure|aws|gcp] list\n" +
-	"       omnictx cloud <azure|gcp> <account>"
+	"       omnictx cloud <azure|aws|gcp> <account>\n" +
+	"       omnictx cloud aws region [<region>|auto]"
 
 // runCloud handles `omnictx cloud [value]` and the read-only listing forms.
 // With no argument it prints the effective selection (env > config > default).
@@ -284,6 +378,12 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 		warnAll(stderr, notes)
 		_, _ = fmt.Fprintln(stdout, cfg.Cloud)
 		return 0
+	}
+	// `region` is a reserved word (like `list`): `cloud aws region ...`
+	// dispatches to the region subcommand and can never name a profile.
+	if len(args) >= 2 && strings.ToLower(strings.TrimSpace(args[0])) == "aws" &&
+		strings.ToLower(strings.TrimSpace(args[1])) == "region" {
+		return runAwsRegion(args[2:], home, stdout, stderr)
 	}
 	if len(args) > 2 {
 		_, _ = fmt.Fprintln(stderr, cloudUsage)
@@ -529,12 +629,12 @@ func runNamespaceList(stdout, stderr io.Writer, home string) int {
 }
 
 // runCloudSwitch handles `omnictx cloud <provider> <account>`: switching the
-// provider's active account where that state lives in a local file (gcloud
-// active_config, azureProfile.json isDefault). The provider is one of
-// azure/gcp/aws (validated by the caller). AWS is the honest exception — it
-// has no persistent current-profile concept, so we print the session env hint
-// instead of inventing one. The account argument goes through the `aliases`
-// config key first; names/ids are otherwise matched verbatim.
+// provider's active account. For gcloud and Azure that state lives in a local
+// file (active_config, azureProfile.json isDefault). AWS has no such file, so
+// the switch persists `aws_profile:` to omnictx's own config — the per-prompt
+// hook exports it as AWS_PROFILE in every hook-running shell; ~/.aws is never
+// written. The account argument goes through the `aliases` config key first;
+// names/ids are otherwise matched verbatim.
 func runCloudSwitch(provider, account string, home string, stderr io.Writer) int {
 	account = strings.TrimSpace(account)
 
@@ -569,13 +669,72 @@ func runCloudSwitch(provider, account string, home string, stderr io.Writer) int
 		}
 		return pinCloudAfterUse(provider, stderr)
 	case "aws":
+		if err := aws.ValidateProfile(os.LookupEnv, home, account); err != nil {
+			code := 1
+			var unknown *aws.UnknownProfileError
+			if errors.As(err, &unknown) {
+				code = 2
+			}
+			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+			return code
+		}
+		if err := setConfigKeys(globalConfigPath(), "aws_profile", account); err != nil {
+			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+			return 1
+		}
+		if code := pinCloudAfterUse(provider, stderr); code != 0 {
+			return code
+		}
 		_, _ = fmt.Fprintf(stderr,
-			"omnictx: AWS has no persistent current profile; set it for the session instead:\n  export AWS_PROFILE=%s\n", account)
-		return 2
+			"omnictx: AWS profile switched to %q; shells running the omnictx hook apply it on their next prompt\n", account)
+		return 0
 	default:
 		_, _ = fmt.Fprintln(stderr, cloudUsage)
 		return 2
 	}
+}
+
+const awsRegionUsage = "usage: omnictx cloud aws region [<region>|auto]"
+
+// runAwsRegion handles `omnictx cloud aws region [<region>|auto]`. One
+// argument persists an `aws_region:` override to omnictx's own config
+// (validated offline by shape only — existence would need network); `auto`
+// removes the override idempotently so the region falls back to the active
+// profile's configured region. No argument prints the effective region
+// (env > override > profile config), read-only.
+func runAwsRegion(args []string, home string, stdout, stderr io.Writer) int {
+	if len(args) > 1 {
+		_, _ = fmt.Fprintln(stderr, awsRegionUsage)
+		return 2
+	}
+
+	if len(args) == 0 {
+		cfg, notes := config.Resolve(config.Flags{}, os.LookupEnv, home)
+		warnAll(stderr, notes)
+		profile := aws.EffectiveProfile(os.LookupEnv, cfg.AWSProfile)
+		if r := aws.EffectiveRegion(os.LookupEnv, home, profile, cfg.AWSRegion); r != "" {
+			_, _ = fmt.Fprintln(stdout, r)
+		}
+		return 0
+	}
+
+	v := strings.TrimSpace(args[0])
+	if strings.ToLower(v) == "auto" {
+		if err := removeConfigKey(globalConfigPath(), "aws_region"); err != nil {
+			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if !aws.ValidRegion(v) {
+		_, _ = fmt.Fprintf(stderr, "omnictx: invalid region %q\n%s\n", args[0], awsRegionUsage)
+		return 2
+	}
+	if err := setConfigKeys(globalConfigPath(), "aws_region", v); err != nil {
+		_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // warnAll prints interactive-mode warnings to stderr. Render never calls it:
@@ -589,7 +748,10 @@ func warnAll(stderr io.Writer, notes []string) {
 
 // pinCloudAfterUse persists `cloud: <provider>` after a successful account
 // switch, so the prompt immediately shows the provider that was just switched
-// to (instead of whatever the previous pin/auto-detection displayed).
+// to (instead of whatever the previous pin/auto-detection displayed). It
+// deliberately never touches the display toggles: a switch changes state, not
+// visibility — under a persisted mute (enabled: false) the state still flips,
+// and the prompt reflects it once `on` / `cloud on` lifts the mute.
 func pinCloudAfterUse(provider string, stderr io.Writer) int {
 	if err := setConfigKeys(globalConfigPath(), "cloud", provider); err != nil {
 		_, _ = fmt.Fprintf(stderr, "omnictx: account switched, but pinning the cloud failed: %v\n", err)
@@ -671,8 +833,10 @@ func cloudProviders() []cloud.Provider {
 	return []cloud.Provider{azure.New(), aws.New(), gcp.New()}
 }
 
-// gather reads only the data sources required by the enabled segments.
-func gather(cfg config.Config, home string) render.Data {
+// gather reads only the data sources required by the enabled segments. lookup
+// is the environment view — the real env in render mode, the directive overlay
+// in hook mode.
+func gather(cfg config.Config, home string, lookup config.LookupEnv) render.Data {
 	needKube := false
 	needCloud := false
 	for _, s := range cfg.Segments {
@@ -688,8 +852,8 @@ func gather(cfg config.Config, home string) render.Data {
 
 	var data render.Data
 	if needCloud {
-		if active, ok := cloud.Select(cloudProviders(), cfg.Cloud, os.LookupEnv, home); ok {
-			if r := active.Read(os.LookupEnv, home); r.OK {
+		if active, ok := cloud.Select(cloudProviders(), cfg.Cloud, cloud.LookupEnv(lookup), home); ok {
+			if r := active.Read(cloud.LookupEnv(lookup), home); r.OK {
 				data.Cloud = render.Cloud{
 					Key:   active.Key(),
 					Label: active.Label(cfg.Icons),
@@ -701,7 +865,7 @@ func gather(cfg config.Config, home string) render.Data {
 	// The namespace renders only as a suffix of the kube segment, so reading
 	// the kubeconfig is only worthwhile when kube itself is enabled.
 	if needKube {
-		info := kube.Read(os.LookupEnv, home)
+		info := kube.Read(kube.LookupEnv(lookup), home)
 		data.Kube = info.Context
 		data.Namespace = info.Namespace
 	}

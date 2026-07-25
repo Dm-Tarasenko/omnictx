@@ -50,6 +50,8 @@ omnictx cloud on|off          # show/hide just the cloud slot
 omnictx cloud aws list        # offline table of local AWS profiles (also: gcp, azure)
 omnictx cloud gcp work        # activate a gcloud configuration
 omnictx cloud azure prod      # switch the default Azure subscription (name/id/alias)
+omnictx cloud aws prod        # switch the AWS profile in every hook-running shell
+omnictx cloud aws region eu-central-1   # persist a region override ("auto" clears it)
 
 omnictx kube                  # show the current kube-context
 omnictx kube list             # table of contexts across $KUBECONFIG files
@@ -63,9 +65,21 @@ omnictx ns list               # table of cluster namespaces (the one command tha
 
 Switching a cloud account or kube-context/namespace edits the corresponding
 local file (kubeconfig, gcloud `active_config`, `azureProfile.json`) the same
-careful way: target must exist, single-line surgery, atomic write. AWS is the
-honest exception — it has no persistent "current profile", so
-`omnictx cloud aws prod` prints `export AWS_PROFILE=prod` for you to run.
+careful way: target must exist, single-line surgery, atomic write.
+
+AWS has no persistent "current profile" of its own, so `omnictx cloud aws prod`
+persists the choice in omnictx's **own** config file (`~/.aws` is never
+written) and every shell running the `init` hook exports `AWS_PROFILE=prod` on
+its next prompt — switch once, every terminal follows. Sessions the hook does
+not own are left alone: a manual `export AWS_PROFILE=...`, direnv, or an
+aws-vault session pins that shell until you unset it. `cloud aws region <r>`
+works the same way for `AWS_REGION`, on top of the profile's configured region.
+
+**Upgrading from the export-hint days:** restart your shells (or re-run
+`eval "$(omnictx init ...)"`) once so the new hook snippet is active, and
+remove any `export AWS_PROFILE=...` line from your rc file — a shell that
+starts with a manual export looks pinned forever, so global switches would
+never reach it. Run `omnictx cloud aws <profile>` once instead.
 
 ## Configuration
 

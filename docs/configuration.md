@@ -21,6 +21,8 @@ config file.
 | `enabled` / `omnictx on\|off` | `OMNICTX_ENABLED` | `true` | master on/off |
 | `colors` | — | blue/cyan/dim | per-segment colors (config file only) |
 | `aliases` | — | — | short names for `omnictx cloud <p> <alias>` (config file only) |
+| `aws_profile` / `omnictx cloud aws <p>` | — | — | AWS profile exported by hook shells (machine-written; AWS's own `AWS_PROFILE` is the session override) |
+| `aws_region` / `omnictx cloud aws region <r>` | — | — | AWS region override exported by hook shells (machine-written; `auto` removes the key) |
 | `--shell bash\|zsh\|none` (flag) | `OMNICTX_SHELL` | `none` | color escaping mode |
 | — | `OMNICTX_CONFIG` | `~/.config/omnictx/config.yaml` | config file path |
 
@@ -60,6 +62,10 @@ aliases:                             # short names for `omnictx cloud <p> <alias
     prod: "Azure subscription 1"     # value = subscription name or id
   gcp:
     w: work                          # value = gcloud configuration name
+  aws:
+    p: prod                          # value = AWS profile name
+aws_profile: prod                    # machine-written by `omnictx cloud aws <profile>`
+aws_region: eu-central-1             # machine-written by `omnictx cloud aws region <r>`
 ```
 
 ## Output format

@@ -72,9 +72,27 @@ aliases:
   gcp:   { w: work }
 ```
 
-AWS is the honest exception: the ecosystem has no persistent "current profile"
-(it is the session-scoped `AWS_PROFILE`), so `omnictx cloud aws prod` just
-prints the correct command — `export AWS_PROFILE=prod` — and exits non-zero.
+AWS has no persistent "current profile" of its own (the ecosystem uses the
+session-scoped `AWS_PROFILE`), so its switch works through omnictx instead of a
+foreign file: `omnictx cloud aws prod` validates the profile against
+`~/.aws/config` + `~/.aws/credentials`, persists `aws_profile: prod` in
+omnictx's own config (`~/.aws` is never written), and every shell running the
+`init` hook exports `AWS_PROFILE=prod` on its next prompt:
+
+```bash
+omnictx cloud aws prod                # every hook-running terminal follows
+omnictx cloud aws region eu-central-1 # AWS_REGION override, same mechanism
+omnictx cloud aws region auto         # back to the profile's own region
+omnictx cloud aws region              # print the effective region
+```
+
+Sessions the hook does not own stay pinned: a manual `export AWS_PROFILE=...`,
+direnv, or an aws-vault session keeps its value until you unset it (the hook
+tracks what it exported via `__OMNICTX_AWS_PROFILE`/`__OMNICTX_AWS_REGION`
+markers and never stomps anything else). For the same reason, drop any
+`export AWS_PROFILE=...` from your rc file — such shells look manually pinned
+and global switches would never reach them. `list` and `region` are reserved
+words for the profile argument.
 
 ## Switching the kube-context
 
