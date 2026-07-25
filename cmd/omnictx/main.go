@@ -682,12 +682,7 @@ func runCloudSwitch(provider, account string, home string, stderr io.Writer) int
 			_, _ = fmt.Fprintf(stderr, "omnictx: %v\n", err)
 			return 1
 		}
-		if code := pinCloudAfterUse(provider, stderr); code != 0 {
-			return code
-		}
-		_, _ = fmt.Fprintf(stderr,
-			"omnictx: AWS profile switched to %q; shells running the omnictx hook apply it on their next prompt\n", account)
-		return 0
+		return pinCloudAfterUse(provider, stderr)
 	default:
 		_, _ = fmt.Fprintln(stderr, cloudUsage)
 		return 2

@@ -1467,13 +1467,9 @@ func TestRunCloudSwitchAws(t *testing.T) {
 				t.Errorf("config missing %q after switch:\n%s", want, data)
 			}
 		}
-		// The switch is real and the historical hint is gone.
-		if strings.Contains(stderr.String(), "export AWS_PROFILE") {
-			t.Errorf("stderr must not contain the export hint:\n%s", stderr.String())
-		}
-		// On success a note explains where the switch takes effect.
-		if !strings.Contains(stderr.String(), "hook") {
-			t.Errorf("stderr should mention the hook shells:\n%s", stderr.String())
+		// A successful switch is silent, like the gcp/azure switches.
+		if stderr.Len() != 0 {
+			t.Errorf("stderr must be empty on success:\n%s", stderr.String())
 		}
 		// ~/.aws stays read-only: the source file is byte-identical and no
 		// ~/.aws directory appeared in the hermetic home.
