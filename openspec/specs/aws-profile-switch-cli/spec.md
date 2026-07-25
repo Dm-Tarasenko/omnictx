@@ -19,9 +19,10 @@ persists `cloud: aws` (the same post-switch pin as gcp/azure switches) and
 exits 0. The switch changes state, never visibility: it SHALL NOT touch the
 `enabled` or `kube` display toggles — under a persisted mute
 (`enabled: false`) the state still flips, and the prompt reflects it once
-`omnictx on` / `cloud on` lifts the mute. The command SHALL NOT write to any file under `~/.aws`. On success the
-command SHALL print a note to stderr that the switch applies to shells running
-the omnictx hook on their next prompt.
+`omnictx on` / `cloud on` lifts the mute. The command SHALL NOT write to any
+file under `~/.aws`. On success the command SHALL be silent (no stdout/stderr
+output), matching the gcp/azure switches; hook-running shells apply the switch
+on their next prompt.
 
 #### Scenario: Successful switch persists profile and pins the cloud
 - **WHEN** `~/.aws/config` defines `[profile digital-dev]` and the user runs `omnictx cloud aws digital-dev`

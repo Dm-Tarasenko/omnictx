@@ -10,19 +10,23 @@ lets you **switch** them without leaving it.
 󰠅 prod-subscription ⎈ prod-cluster:payments
 ```
 
-- **Offline and fast.** Rendering and switching work on local config files
-  directly — no `kubectl`/`az`/`aws`/`gcloud`, no network — so the prompt
-  segment fits comfortably inside the prompt budget (cold start + render
-  < 10 ms). The single exception is `ns list`, which queries the cluster
-  via `kubectl`.
+- **Offline and fast.** Everything reads and writes local config files
+  directly, without shelling out to cloud CLIs and without network access.
+  The single exception is `ns list`, which queries the cluster via `kubectl`.
 - **Never breaks your prompt.** Any error (missing file, broken config, not
   logged in) silently skips the affected segment. Rendering never writes
   anything; writes happen only in explicit commands, which do the opposite —
   validate strictly and fail loudly.
 - **One active cloud.** `auto` (default) shows the provider whose local config
   is present, by priority azure → aws → gcp; or pin one explicitly.
-- **Careful switching.** Validate first, write atomically, preserve comments
-  and formatting byte-for-byte, never touch an unparsable file.
+- **Careful switching.** Validate first, write atomically, change nothing
+  beyond what the switch needs, never touch an unparsable file.
+
+Tools like `kube-ps1` (Kubernetes only) and `starship` (separate
+kubernetes/aws/gcloud/azure modules, assembled and configured by hand) cover
+parts of this; omnictx is a single self-contained binary that shows the
+active cloud + kube context out of the box, with one consistent format and
+one set of toggles.
 
 ## Install
 
@@ -64,8 +68,16 @@ omnictx ns list               # table of cluster namespaces (the one command tha
 ```
 
 Switching a cloud account or kube-context/namespace edits the corresponding
-local file (kubeconfig, gcloud `active_config`, `azureProfile.json`) the same
-careful way: target must exist, single-line surgery, atomic write.
+local file (kubeconfig, gcloud `active_config`, `azureProfile.json`, and for
+AWS omnictx's own config — see below): the target must exist, the write is
+atomic, and no other setting is changed.
+
+Switches are **global**, not per-terminal: they flip the same state `kubectl`,
+`az` and `gcloud` read — and, for AWS, every hook-running shell — so the
+change applies everywhere at once. To keep one terminal on a different
+account, export the tool's own env var yourself in that terminal (e.g.
+`export AWS_PROFILE=other`) — omnictx respects it and never overwrites a
+manual export.
 
 AWS has no persistent "current profile" of its own, so `omnictx cloud aws prod`
 persists the choice in omnictx's **own** config file (`~/.aws` is never
@@ -75,11 +87,14 @@ not own are left alone: a manual `export AWS_PROFILE=...`, direnv, or an
 aws-vault session pins that shell until you unset it. `cloud aws region <r>`
 works the same way for `AWS_REGION`, on top of the profile's configured region.
 
-**Upgrading from the export-hint days:** restart your shells (or re-run
-`eval "$(omnictx init ...)"`) once so the new hook snippet is active, and
-remove any `export AWS_PROFILE=...` line from your rc file — a shell that
-starts with a manual export looks pinned forever, so global switches would
-never reach it. Run `omnictx cloud aws <profile>` once instead.
+If a switch seems to have no effect, check two things:
+
+- Your rc file exports `AWS_PROFILE` itself. Every shell then starts with a
+  manual pin, which omnictx respects — so switches never apply. Remove the
+  `export AWS_PROFILE=...` line; `omnictx cloud aws <profile>` replaces it.
+- You upgraded omnictx, but the terminal was opened before that. A shell
+  keeps the hook snippet it evaluated at startup — restart it (or re-run
+  `eval "$(omnictx init zsh)"`) to pick up the new one.
 
 ## Configuration
 
@@ -110,5 +125,4 @@ aliases:                             # short names for `omnictx cloud <p> <alias
 - [Recipes](docs/recipes.md) — toggles, switching clouds, accounts,
   kube-contexts, and namespaces.
 
-For development conventions see [`AGENTS.md`](./AGENTS.md); the full product
-requirements live in [`PRD.md`](./PRD.md).
+For development conventions see [`AGENTS.md`](./AGENTS.md).

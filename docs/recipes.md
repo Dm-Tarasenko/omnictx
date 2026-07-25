@@ -50,6 +50,24 @@ CURRENT   NAME      REGION
 
 ## Switching cloud accounts
 
+Account switches are global: they change the file `az`/`gcloud` themselves
+read, so every terminal and tool sees the new account immediately. If you
+want one terminal to live on a different account or cluster, export the
+tool's own env var **yourself in that terminal** — the CLIs and omnictx all
+honor it, and global switches leave that shell alone until you unset it:
+
+| To pin in one terminal | Export there |
+|---|---|
+| AWS profile | `export AWS_PROFILE=other` |
+| AWS region | `export AWS_REGION=eu-central-1` |
+| GCP configuration | `export CLOUDSDK_ACTIVE_CONFIG_NAME=other` |
+| GCP project only | `export CLOUDSDK_CORE_PROJECT=other-project` |
+| Kube context + namespace | `export KUBECONFIG=~/.kube/other-config` (separate kubeconfig file; or per command: `kubectl --context other`) |
+| Azure subscription | none exists — `az` only offers `AZURE_CONFIG_DIR=<dir>` (a full separate copy of `~/.azure`), or per command: `az --subscription <name>` |
+
+The prompt segment follows the same variables, so a pinned terminal also
+*shows* what it is pinned to.
+
 Azure and GCP keep their active account in local files, so omnictx can switch
 them the same careful way it switches kube-contexts (validate first, atomic
 write, never touch an unparsable file):
@@ -156,6 +174,10 @@ stays strictly offline.
 ## Shell integration internals
 
 Curious what `eval "$(omnictx init <shell>)"` actually runs? Just print it:
-`omnictx init bash` (or `zsh`) — it is a dozen lines of plain shell: a prompt
-hook that prepends the segment to your existing prompt, guarded so it is
-idempotent and leaves the prompt untouched when the segment is empty.
+`omnictx init bash` (or `zsh`) — a short, idempotent prompt hook. On every
+prompt it calls `omnictx hook`, which prints three lines: an `AWS_PROFILE`
+directive, an `AWS_REGION` directive, and the prompt segment. The snippet
+applies the directives (export, unset, or leave alone — a manual export is
+never stomped; the hook tracks its own exports via `__OMNICTX_AWS_*` markers)
+and prepends the segment to your prompt, leaving the prompt untouched when
+the segment is empty.

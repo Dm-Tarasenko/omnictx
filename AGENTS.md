@@ -50,9 +50,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   `cloud <azure|aws|gcp> <account>` (switch active account: gcp writes
   <gcloud>/active_config, azure flips isDefault in azureProfile.json via JSON
   round-trip with BOM preserved, aws validates against config+credentials names
-  and persists `aws_profile:` to omnictx's OWN config — never writes `~/.aws` —
-  with a stderr note that hook-running shells apply it on their next prompt;
-  name/id or `aliases.<provider>.<short>` from omnictx config;
+  and persists `aws_profile:` to omnictx's OWN config — never writes `~/.aws`;
+  success is silent like the other switches (hook-running shells apply it on
+  their next prompt); name/id or `aliases.<provider>.<short>` from omnictx config;
   unknown/ambiguous → exit 2, broken source → exit 1; `list` and `region` are
   reserved words for the aws profile argument. Switches change state, never
   visibility: no switch touches the `enabled`/`kube` display toggles — under a
@@ -171,6 +171,6 @@ deprecation warnings. Job shape: go vet → golangci-lint → go test -race → 
 matrix linux/amd64,arm64.
 
 ## Definition of Done
-See PRD.md §8.3. In short: build+test(-race) green, edge cases covered,
-prompt never breaks, config + init/toggles work, CI green, README with the
-`eval "$(omnictx init bash)"` install path.
+Build, `go vet`, `go test ./... -race` and golangci-lint green; edge cases
+covered by tests; the prompt never breaks; config + init/toggles work; CI
+green; README documents the `eval "$(omnictx init bash)"` install path.

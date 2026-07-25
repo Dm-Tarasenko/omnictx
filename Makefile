@@ -21,7 +21,8 @@ golden:
 	go test ./internal/render -update
 
 install: build
-	install -Dm755 $(BIN) $(HOME)/.local/bin/omnictx
+	mkdir -p $(HOME)/.local/bin
+	install -m 755 $(BIN) $(HOME)/.local/bin/omnictx
 
 clean:
 	rm -rf bin
