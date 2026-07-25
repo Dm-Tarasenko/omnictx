@@ -4,8 +4,19 @@ if [ -z "${__OMNICTX_ZSH_LOADED:-}" ]; then
   __OMNICTX_ORIG_PROMPT="$PROMPT"
 
   __omnictx_precmd() {
-    local __omnictx_seg
-    __omnictx_seg="$({{.Cmd}} --shell zsh)"
+    local __omnictx_out __omnictx_profile __omnictx_region __omnictx_seg
+    __omnictx_out="$({{.Cmd}} hook --shell zsh)"
+    { IFS= read -r __omnictx_profile; IFS= read -r __omnictx_region; IFS= read -r __omnictx_seg; } <<< "$__omnictx_out"
+    if [ "$__omnictx_profile" = "-" ]; then
+      unset AWS_PROFILE __OMNICTX_AWS_PROFILE
+    elif [ -n "$__omnictx_profile" ]; then
+      export AWS_PROFILE="$__omnictx_profile" __OMNICTX_AWS_PROFILE="$__omnictx_profile"
+    fi
+    if [ "$__omnictx_region" = "-" ]; then
+      unset AWS_REGION __OMNICTX_AWS_REGION
+    elif [ -n "$__omnictx_region" ]; then
+      export AWS_REGION="$__omnictx_region" __OMNICTX_AWS_REGION="$__omnictx_region"
+    fi
     if [ -n "$__omnictx_seg" ]; then
       PROMPT="${__omnictx_seg} ${__OMNICTX_ORIG_PROMPT}"
     else

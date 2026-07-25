@@ -120,8 +120,9 @@ func TestUsageListsCloudSubcommand(t *testing.T) {
 	for _, want := range []string{
 		"cloud [azure|aws|gcp|auto|none|on|off]",
 		"cloud [azure|aws|gcp] list",
-		"cloud <azure|gcp> <account>",
-		"AWS_PROFILE", // the honest AWS answer lives in the help too
+		"cloud <azure|aws|gcp> <account>",
+		"cloud aws region [<region>|auto]",
+		"AWS_PROFILE",   // the manual-export session pin is worth calling out
 		"OMNICTX_CLOUD", // the per-session override is worth calling out
 	} {
 		if !strings.Contains(out, want) {
@@ -165,7 +166,9 @@ contexts:
       namespace: staging
 `
 
-// kubeTestConfig writes a kubeconfig fixture and points KUBECONFIG at it.
+// kubeTestConfig writes a kubeconfig fixture and points KUBECONFIG at it. It
+// also isolates OMNICTX_CONFIG: a successful switch updates the display
+// toggles, and that write must never reach the developer's real config.
 func kubeTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config")
@@ -173,6 +176,7 @@ func kubeTestConfig(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	t.Setenv("KUBECONFIG", path)
+	t.Setenv("OMNICTX_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
 	return path
 }
 
@@ -199,6 +203,43 @@ func TestRunKubeSwitch(t *testing.T) {
 	if stdout.String() != "kind-2\n" {
 		t.Errorf("read-back = %q, want %q", stdout.String(), "kind-2\n")
 	}
+}
+
+// A kube-context/namespace switch changes kubeconfig state only — it never
+// touches omnictx's own config: visibility is controlled exclusively by the
+// on/off commands (`omnictx on`, `kube on`, `cloud on`), even under a
+// persisted mute.
+func TestRunKubeSwitchNeverTouchesDisplayToggles(t *testing.T) {
+	t.Run("switch with default toggles does not create the config", func(t *testing.T) {
+		kubeTestConfig(t, kindKubeconfig) // isolated OMNICTX_CONFIG, no file
+		var stdout, stderr strings.Builder
+		if code := runKube([]string{"kind-2"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if _, err := os.ReadFile(os.Getenv("OMNICTX_CONFIG")); err == nil {
+			t.Error("context switch must not create/modify the omnictx config")
+		}
+	})
+
+	t.Run("switch under the mute leaves the config byte-identical", func(t *testing.T) {
+		kubeTestConfig(t, kindKubeconfig)
+		cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+		t.Setenv("OMNICTX_CONFIG", cfgPath)
+		orig := "enabled: false\nkube: false\n"
+		if err := os.WriteFile(cfgPath, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		if code := runKube([]string{"kind-2"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("context switch: exit %d (stderr: %s)", code, stderr.String())
+		}
+		if code := runNamespace([]string{"billing"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("namespace switch: exit %d (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(cfgPath); string(data) != orig {
+			t.Errorf("switches must not touch the omnictx config:\n%s", data)
+		}
+	})
 }
 
 func TestRunKubeUnknownContext(t *testing.T) {
@@ -714,7 +755,6 @@ func TestRunCloudReadBack(t *testing.T) {
 	}
 }
 
-
 func TestRunCloudOnOffAliases(t *testing.T) {
 	t.Run("off persists none, on persists auto", func(t *testing.T) {
 		path := cloudTestConfig(t)
@@ -972,12 +1012,12 @@ func TestGatherSkipsKubeWhenDisabled(t *testing.T) {
 	cfg.Cloud = config.CloudNone
 
 	cfg.Kube = false
-	if data := gather(cfg, "/nonexistent-home"); data.Kube != "" || data.Namespace != "" {
+	if data := gather(cfg, "/nonexistent-home", os.LookupEnv); data.Kube != "" || data.Namespace != "" {
 		t.Errorf("kube disabled: gather = %+v, want empty kube/namespace", data)
 	}
 
 	cfg.Kube = true
-	if data := gather(cfg, "/nonexistent-home"); data.Kube != "kind-1" || data.Namespace != "payments" {
+	if data := gather(cfg, "/nonexistent-home", os.LookupEnv); data.Kube != "kind-1" || data.Namespace != "payments" {
 		t.Errorf("kube enabled: gather = %+v, want kind-1/payments", data)
 	}
 }
@@ -1006,6 +1046,53 @@ func TestSetConfigKeyIgnoresNestedKeys(t *testing.T) {
 	if !strings.HasPrefix(got, "kube: false\n") {
 		t.Errorf("new key should be prepended at top level:\n%s", got)
 	}
+}
+
+// removeConfigKey deletes only the named top-level line; everything else —
+// comments, other keys, identically named nested keys — must survive, and
+// removing an absent key (or from a missing file) is a silent no-op.
+func TestRemoveConfigKey(t *testing.T) {
+	t.Run("removes only the top-level line", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		orig := "# my precious comment\naws_region: eu-central-1\naws_profile: prod\ncolors:\n  aws_region: red\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := removeConfigKey(path, "aws_region"); err != nil {
+			t.Fatalf("removeConfigKey: %v", err)
+		}
+		data, _ := os.ReadFile(path)
+		want := "# my precious comment\naws_profile: prod\ncolors:\n  aws_region: red\n"
+		if string(data) != want {
+			t.Errorf("config after removal:\n%s\nwant:\n%s", data, want)
+		}
+	})
+
+	t.Run("removal is idempotent", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		orig := "enabled: true\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := removeConfigKey(path, "aws_region"); err != nil {
+				t.Fatalf("removeConfigKey: %v", err)
+			}
+		}
+		if data, _ := os.ReadFile(path); string(data) != orig {
+			t.Errorf("absent key must leave the file byte-identical:\n%s", data)
+		}
+	})
+
+	t.Run("missing file is success and is not created", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := removeConfigKey(path, "aws_region"); err != nil {
+			t.Fatalf("removeConfigKey on missing file: %v", err)
+		}
+		if _, err := os.Stat(path); err == nil {
+			t.Error("removal must not create the config file")
+		}
+	})
 }
 
 // awsListEnv points the AWS config at the named fixture and neutralizes the
@@ -1074,7 +1161,7 @@ func TestRunCloudProviderList(t *testing.T) {
 				t.Errorf("gcp list missing %q:\n%s", want, out)
 			}
 		}
-		for _, l := range strings.Split(out, "\n") {
+		for l := range strings.SplitSeq(out, "\n") {
 			if strings.HasPrefix(l, "*") && !strings.Contains(l, "work") {
 				t.Errorf("active row should be work: %q", l)
 			}
@@ -1222,6 +1309,24 @@ func TestRunCloudSwitchGcp(t *testing.T) {
 		}
 	})
 
+	t.Run("switch while muted flips state but never the display toggles", func(t *testing.T) {
+		gcloudUseEnv(t)
+		cfgPath := cloudTestConfig(t)
+		if err := os.WriteFile(cfgPath, []byte("enabled: false\nkube: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"gcp", "work"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(cfgPath)
+		for _, want := range []string{"enabled: false", "kube: true", "cloud: gcp"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("after switch under the mute, config missing %q:\n%s", want, data)
+			}
+		}
+	})
+
 	t.Run("via alias from omnictx config", func(t *testing.T) {
 		dir := gcloudUseEnv(t)
 		path := cloudTestConfig(t)
@@ -1342,15 +1447,285 @@ func TestRunCloudSwitchAzure(t *testing.T) {
 	})
 }
 
-func TestRunCloudSwitchAwsHint(t *testing.T) {
-	cloudTestConfig(t)
-	var stdout, stderr strings.Builder
-	if code := runCloud([]string{"aws", "prod"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "export AWS_PROFILE=prod") {
-		t.Errorf("stderr should hint the session env var:\n%s", stderr.String())
-	}
+func TestRunCloudSwitchAws(t *testing.T) {
+	t.Run("switch persists aws_profile and pins the cloud", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		orig := "# my precious comment\nenabled: true\n"
+		if err := os.WriteFile(cfgPath, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fixture, _ := os.ReadFile(os.Getenv("AWS_CONFIG_FILE"))
+
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "prod"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(cfgPath)
+		for _, want := range []string{"aws_profile: prod", "cloud: aws", "# my precious comment", "enabled: true"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("config missing %q after switch:\n%s", want, data)
+			}
+		}
+		// The switch is real and the historical hint is gone.
+		if strings.Contains(stderr.String(), "export AWS_PROFILE") {
+			t.Errorf("stderr must not contain the export hint:\n%s", stderr.String())
+		}
+		// On success a note explains where the switch takes effect.
+		if !strings.Contains(stderr.String(), "hook") {
+			t.Errorf("stderr should mention the hook shells:\n%s", stderr.String())
+		}
+		// ~/.aws stays read-only: the source file is byte-identical and no
+		// ~/.aws directory appeared in the hermetic home.
+		if after, _ := os.ReadFile(os.Getenv("AWS_CONFIG_FILE")); string(after) != string(fixture) {
+			t.Errorf("~/.aws/config must not be modified:\n%s", after)
+		}
+		if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".aws")); err == nil {
+			t.Error("switch must not create anything under ~/.aws")
+		}
+	})
+
+	t.Run("credentials-only profile is accepted", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := os.MkdirAll(filepath.Join(home, ".aws"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		src, _ := os.ReadFile(filepath.Join("..", "..", "testdata", "aws_credentials_extra.ini"))
+		if err := os.WriteFile(filepath.Join(home, ".aws", "credentials"), src, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AWS_CONFIG_FILE", filepath.Join(home, "missing"))
+		cfgPath := cloudTestConfig(t)
+
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "ci-only"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "aws_profile: ci-only") {
+			t.Errorf("config missing aws_profile: ci-only:\n%s", data)
+		}
+	})
+
+	t.Run("alias resolves before validation", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		if err := os.WriteFile(cfgPath, []byte("aliases:\n  aws:\n    p: prod\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "p"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "aws_profile: prod") {
+			t.Errorf("config should contain the canonical name:\n%s", data)
+		}
+	})
+
+	t.Run("unknown profile exits 2 and writes nothing", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "nope"}, &stdout, &stderr); code != 2 {
+			t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), `"nope"`) {
+			t.Errorf("stderr should name the unknown profile:\n%s", stderr.String())
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("failed switch must not create/modify the omnictx config")
+		}
+	})
+
+	t.Run("unreadable sources exit 1 and write nothing", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir()) // no ~/.aws at all
+		t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "missing"))
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "anything"}, &stdout, &stderr); code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr.String())
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("failed switch must not create/modify the omnictx config")
+		}
+	})
+
+	// A switch changes state, not visibility: under a persisted mute the
+	// profile and pin are still written, but enabled/kube stay untouched —
+	// the prompt shows the result only after `on` / `cloud on`.
+	t.Run("switch while muted flips state but never the display toggles", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		if err := os.WriteFile(cfgPath, []byte("enabled: false\nkube: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "prod"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(cfgPath)
+		for _, want := range []string{"enabled: false", "kube: true", "cloud: aws", "aws_profile: prod"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("after switch under the mute, config missing %q:\n%s", want, data)
+			}
+		}
+	})
+
+	t.Run("list stays reserved and never writes aws_profile", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "list"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if !strings.Contains(stdout.String(), "NAME") {
+			t.Errorf("list should print the profile table:\n%s", stdout.String())
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("list must not create/modify the omnictx config")
+		}
+	})
+}
+
+func TestRunCloudAwsRegion(t *testing.T) {
+	t.Run("valid region is persisted", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region", "eu-central-1"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "aws_region: eu-central-1") {
+			t.Errorf("config missing aws_region: eu-central-1:\n%s", data)
+		}
+	})
+
+	t.Run("garbage region exits 2 and writes nothing", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region", "Frankfurt"}, &stdout, &stderr); code != 2 {
+			t.Fatalf("exit code = %d, want 2", code)
+		}
+		if !strings.Contains(stderr.String(), "usage:") {
+			t.Errorf("stderr should show usage:\n%s", stderr.String())
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("invalid region must not create/modify the omnictx config")
+		}
+	})
+
+	t.Run("profile switch keeps the override", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region", "eu-central-1"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("region set: exit %d", code)
+		}
+		if code := runCloud([]string{"aws", "prod"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("profile switch: exit %d (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "aws_region: eu-central-1") {
+			t.Errorf("profile switch must keep the region override:\n%s", data)
+		}
+	})
+
+	t.Run("auto clears the override and is idempotent", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		orig := "# keep me\naws_region: eu-central-1\naws_profile: prod\n"
+		if err := os.WriteFile(cfgPath, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		for range 2 { // clearing twice is fine
+			if code := runCloud([]string{"aws", "region", "auto"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("region auto: exit %d (stderr: %s)", code, stderr.String())
+			}
+		}
+		data, _ := os.ReadFile(cfgPath)
+		if strings.Contains(string(data), "aws_region") {
+			t.Errorf("override should be gone:\n%s", data)
+		}
+		for _, want := range []string{"# keep me", "aws_profile: prod"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("config missing %q after region auto:\n%s", want, data)
+			}
+		}
+	})
+
+	t.Run("region set and auto never touch the display toggles", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		if err := os.WriteFile(cfgPath, []byte("enabled: false\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		for _, arg := range []string{"eu-central-1", "auto"} {
+			if code := runCloud([]string{"aws", "region", arg}, &stdout, &stderr); code != 0 {
+				t.Fatalf("region %s: exit %d (stderr: %s)", arg, code, stderr.String())
+			}
+			if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "enabled: false") {
+				t.Errorf("region %s must not touch enabled:\n%s", arg, data)
+			}
+		}
+	})
+
+	t.Run("bare print resolves the override", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		if err := os.WriteFile(cfgPath, []byte("aws_region: eu-central-1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if stdout.String() != "eu-central-1\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "eu-central-1\n")
+		}
+	})
+
+	t.Run("env wins over the override on print", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		if err := os.WriteFile(cfgPath, []byte("aws_region: eu-central-1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AWS_REGION", "us-east-1")
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "us-east-1\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "us-east-1\n")
+		}
+	})
+
+	t.Run("no resolvable region prints nothing", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "missing"))
+		for _, k := range []string{"AWS_PROFILE", "AWS_VAULT", "AWS_REGION", "AWS_DEFAULT_REGION"} {
+			t.Setenv(k, "")
+		}
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region"}, &stdout, &stderr); code != 0 || stdout.String() != "" {
+			t.Errorf("want quiet exit 0, got code=%d out=%q", code, stdout.String())
+		}
+	})
+
+	t.Run("extra argument is a usage error", func(t *testing.T) {
+		awsListEnv(t)
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runCloud([]string{"aws", "region", "eu-central-1", "extra"}, &stdout, &stderr); code != 2 {
+			t.Fatalf("exit code = %d, want 2", code)
+		}
+		if !strings.Contains(stderr.String(), "usage:") {
+			t.Errorf("stderr should show usage:\n%s", stderr.String())
+		}
+	})
 }
 
 // Three-or-more arguments are always a usage error now that `use` is gone:
@@ -1454,6 +1829,161 @@ func TestInteractiveWarnings(t *testing.T) {
 		stderr.Reset()
 		if code := runCloud(nil, &stdout, &stderr); code != 0 || stderr.String() != "" {
 			t.Errorf("cloud: code=%d stderr=%q, want 0 and empty", code, stderr.String())
+		}
+	})
+}
+
+// hookEnv builds a hermetic environment for runHook: AWS profiles from the
+// named fixture, no kube, no ambient AWS/marker env vars, and an isolated
+// omnictx config file whose content is given. It returns the config path.
+func hookEnv(t *testing.T, configYAML string) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	abs, err := filepath.Abs(filepath.Join("..", "..", "testdata", "aws_config_named.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", abs)
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+	for _, k := range []string{
+		"AWS_PROFILE", "AWS_VAULT", "AWS_REGION", "AWS_DEFAULT_REGION",
+		"__OMNICTX_AWS_PROFILE", "__OMNICTX_AWS_REGION",
+		"OMNICTX_CLOUD", "OMNICTX_ENABLED",
+	} {
+		t.Setenv(k, "")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("OMNICTX_CONFIG", path)
+	if configYAML != "" {
+		if err := os.WriteFile(path, []byte(configYAML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path
+}
+
+// hookLines runs runHook and asserts the three-newline-terminated-lines
+// contract, returning [profile directive, region directive, segment].
+func hookLines(t *testing.T, args []string) [3]string {
+	t.Helper()
+	var stdout strings.Builder
+	runHook(args, &stdout)
+	out := stdout.String()
+	if !strings.HasSuffix(out, "\n") {
+		t.Fatalf("hook output must be newline-terminated: %q", out)
+	}
+	parts := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(parts) != 3 {
+		t.Fatalf("hook must emit exactly three lines, got %d: %q", len(parts), out)
+	}
+	return [3]string{parts[0], parts[1], parts[2]}
+}
+
+func TestRunHook(t *testing.T) {
+	t.Run("managed state produces export directives and a lag-free segment", func(t *testing.T) {
+		hookEnv(t, "cloud: aws\naws_profile: prod\naws_region: eu-central-1\n")
+		lines := hookLines(t, nil)
+		if lines[0] != "prod" || lines[1] != "eu-central-1" {
+			t.Errorf("directives = %q/%q, want prod/eu-central-1", lines[0], lines[1])
+		}
+		// The fixture's prod profile has region eu-west-1; the exported
+		// AWS_REGION must win in the segment shipped with the directives.
+		if !strings.Contains(lines[2], "prod/eu-central-1") {
+			t.Errorf("segment = %q, want it to show prod/eu-central-1", lines[2])
+		}
+	})
+
+	t.Run("no managed state produces empty directives", func(t *testing.T) {
+		hookEnv(t, "cloud: aws\n")
+		lines := hookLines(t, nil)
+		if lines[0] != "" || lines[1] != "" {
+			t.Errorf("directives = %q/%q, want both empty", lines[0], lines[1])
+		}
+		// Segment falls back to today's behavior (default profile, its region).
+		if !strings.Contains(lines[2], "default/us-east-1") {
+			t.Errorf("segment = %q, want default/us-east-1", lines[2])
+		}
+	})
+
+	t.Run("manual export pins the session", func(t *testing.T) {
+		hookEnv(t, "cloud: aws\naws_profile: prod\n")
+		t.Setenv("AWS_PROFILE", "stage")
+		t.Setenv("__OMNICTX_AWS_PROFILE", "prod")
+		lines := hookLines(t, nil)
+		if lines[0] != "" {
+			t.Errorf("directive = %q, want empty (manual pin)", lines[0])
+		}
+		if !strings.Contains(lines[2], "stage") {
+			t.Errorf("segment = %q, want the pinned stage", lines[2])
+		}
+	})
+
+	t.Run("hook-owned value follows a new global switch without lag", func(t *testing.T) {
+		hookEnv(t, "cloud: aws\naws_profile: prod\n")
+		t.Setenv("AWS_PROFILE", "dev")
+		t.Setenv("__OMNICTX_AWS_PROFILE", "dev")
+		lines := hookLines(t, nil)
+		if lines[0] != "prod" {
+			t.Errorf("directive = %q, want prod", lines[0])
+		}
+		if !strings.Contains(lines[2], "prod") || strings.Contains(lines[2], "dev") {
+			t.Errorf("segment = %q, want prod (not the stale dev)", lines[2])
+		}
+	})
+
+	t.Run("cleared global state unsets only hook-owned values", func(t *testing.T) {
+		hookEnv(t, "cloud: aws\n")
+		t.Setenv("AWS_PROFILE", "prod")
+		t.Setenv("__OMNICTX_AWS_PROFILE", "prod")
+		lines := hookLines(t, nil)
+		if lines[0] != "-" {
+			t.Errorf("directive = %q, want the unset marker", lines[0])
+		}
+		// The segment reflects the unset: back to the default profile.
+		if !strings.Contains(lines[2], "default") {
+			t.Errorf("segment = %q, want default after the unset", lines[2])
+		}
+	})
+
+	t.Run("aws-vault session is untouched", func(t *testing.T) {
+		hookEnv(t, "cloud: aws\naws_profile: dev\naws_region: eu-central-1\n")
+		t.Setenv("AWS_VAULT", "prod-admin")
+		lines := hookLines(t, nil)
+		if lines[0] != "" || lines[1] != "" {
+			t.Errorf("directives = %q/%q, want both empty under aws-vault", lines[0], lines[1])
+		}
+	})
+
+	// The mute silences only the display: the segment line goes empty while
+	// the directives keep flowing, so an AWS switch takes effect under the
+	// mute exactly like gcp/azure/kube switches do.
+	t.Run("disabled empties only the segment line", func(t *testing.T) {
+		hookEnv(t, "enabled: false\naws_profile: prod\naws_region: eu-central-1\n")
+		if lines := hookLines(t, nil); lines != [3]string{"prod", "eu-central-1", ""} {
+			t.Errorf("lines = %q, want directives with an empty segment", lines)
+		}
+		hookEnv(t, "aws_profile: prod\n")
+		t.Setenv("OMNICTX_ENABLED", "false")
+		if lines := hookLines(t, nil); lines != [3]string{"prod", "", ""} {
+			t.Errorf("OMNICTX_ENABLED=false: lines = %q, want the profile directive with an empty segment", lines)
+		}
+	})
+
+	t.Run("broken config degrades to empty directives and no writes", func(t *testing.T) {
+		path := hookEnv(t, "{ broken: [ yaml")
+		lines := hookLines(t, nil)
+		if lines[0] != "" || lines[1] != "" {
+			t.Errorf("directives = %q/%q, want both empty", lines[0], lines[1])
+		}
+		if data, _ := os.ReadFile(path); string(data) != "{ broken: [ yaml" {
+			t.Errorf("hook must never write the config file:\n%s", data)
+		}
+	})
+
+	t.Run("bad flag degrades to three empty lines", func(t *testing.T) {
+		hookEnv(t, "aws_profile: prod\n")
+		if lines := hookLines(t, []string{"--definitely-not-a-flag"}); lines != [3]string{"", "", ""} {
+			t.Errorf("lines = %q, want all empty on a parse error", lines)
 		}
 	})
 }

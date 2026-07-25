@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,6 +53,12 @@ type Config struct {
 	// Aliases maps provider -> short alias -> canonical account (subscription
 	// name/id for azure, configuration name for gcp). Config-file only.
 	Aliases map[string]map[string]string
+	// AWSProfile / AWSRegion are the machine-written AWS pins (`cloud aws
+	// <profile>` / `cloud aws region <r>`), consumed by the per-prompt hook.
+	// Deliberately config-file only: AWS's native env vars (AWS_PROFILE,
+	// AWS_REGION) are the session-scoped override, honored by the pin logic.
+	AWSProfile string
+	AWSRegion  string
 }
 
 // Flags holds raw command-line flag values. Pointer fields are nil when the
@@ -67,14 +74,16 @@ type LookupEnv func(string) (string, bool)
 // fileConfig is the on-disk YAML model. Pointer fields distinguish "absent"
 // from "zero value" so the layer only overrides what it actually specifies.
 type fileConfig struct {
-	Enabled   *bool             `yaml:"enabled"`
-	Segments  []string          `yaml:"segments"`
-	Cloud     *string           `yaml:"cloud"`
-	Kube      *bool             `yaml:"kube"`
-	Icons     *bool                        `yaml:"icons"`
-	Separator *string                      `yaml:"separator"`
-	Colors    map[string]string            `yaml:"colors"`
-	Aliases   map[string]map[string]string `yaml:"aliases"`
+	Enabled    *bool                        `yaml:"enabled"`
+	Segments   []string                     `yaml:"segments"`
+	Cloud      *string                      `yaml:"cloud"`
+	Kube       *bool                        `yaml:"kube"`
+	Icons      *bool                        `yaml:"icons"`
+	Separator  *string                      `yaml:"separator"`
+	Colors     map[string]string            `yaml:"colors"`
+	Aliases    map[string]map[string]string `yaml:"aliases"`
+	AWSProfile *string                      `yaml:"aws_profile"`
+	AWSRegion  *string                      `yaml:"aws_region"`
 }
 
 // Defaults returns the built-in configuration used when nothing overrides it.
@@ -201,12 +210,16 @@ func applyFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.Colors != nil {
 		// Merge per-key so a partial colors map keeps the defaults for others.
-		for k, v := range fc.Colors {
-			cfg.Colors[k] = v
-		}
+		maps.Copy(cfg.Colors, fc.Colors)
 	}
 	if fc.Aliases != nil {
 		cfg.Aliases = fc.Aliases
+	}
+	if fc.AWSProfile != nil {
+		cfg.AWSProfile = *fc.AWSProfile
+	}
+	if fc.AWSRegion != nil {
+		cfg.AWSRegion = *fc.AWSRegion
 	}
 }
 
@@ -260,7 +273,6 @@ func applyFlags(cfg *Config, flags Flags) {
 		cfg.Shell = *flags.Shell
 	}
 }
-
 
 func splitSegments(v string) []string {
 	parts := strings.Split(v, ",")

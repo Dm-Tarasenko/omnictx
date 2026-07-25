@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -242,5 +243,50 @@ func TestAliasesFromFile(t *testing.T) {
 	}
 	if v := cfg.Aliases["gcp"]["w"]; v != "" {
 		t.Errorf("indexing nil aliases should yield empty, got %q", v)
+	}
+}
+
+// aws_profile / aws_region are config-file-only keys: no OMNICTX_* env
+// override exists for them — AWS's native env vars (AWS_PROFILE, AWS_REGION)
+// fill the session-override role and are honored by the hook's pin logic, not
+// by the config merge.
+func TestAWSKeysFromFile(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string // "" = no config file
+		env         map[string]string
+		wantProfile string
+		wantRegion  string
+	}{
+		{"defaults are empty", "", nil, "", ""},
+		{"both keys from file", "aws_profile: digital-dev\naws_region: eu-central-1\n", nil, "digital-dev", "eu-central-1"},
+		{"profile alone leaves region empty", "aws_profile: prod\n", nil, "prod", ""},
+		{"region alone leaves profile empty", "aws_region: us-east-1\n", nil, "", "us-east-1"},
+		{
+			"AWS-native env vars do not leak into the merge",
+			"aws_profile: prod\n",
+			map[string]string{"AWS_PROFILE": "stage", "AWS_REGION": "us-west-2"},
+			"prod", "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := map[string]string{}
+			maps.Copy(env, tt.env)
+			if tt.yaml != "" {
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				env["OMNICTX_CONFIG"] = path
+			}
+			cfg, _ := Resolve(Flags{}, envFunc(env), "/home")
+			if cfg.AWSProfile != tt.wantProfile {
+				t.Errorf("AWSProfile = %q, want %q", cfg.AWSProfile, tt.wantProfile)
+			}
+			if cfg.AWSRegion != tt.wantRegion {
+				t.Errorf("AWSRegion = %q, want %q", cfg.AWSRegion, tt.wantRegion)
+			}
+		})
 	}
 }

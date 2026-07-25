@@ -166,13 +166,6 @@ The form `omnictx cloud azure <account>` SHALL set `isDefault: true` on the subs
 - **WHEN** `azureProfile.json` is unparsable and the user runs `omnictx cloud azure anything`
 - **THEN** the file is unchanged, an error is printed, and the exit code is 1
 
-### Requirement: AWS has no persistent switch — print the session hint
-The form `omnictx cloud aws <profile>` SHALL NOT write anything. It SHALL print an explanation that AWS has no persistent current-profile concept together with the session command `export AWS_PROFILE=<profile>` to stderr, and exit 2.
-
-#### Scenario: AWS hint
-- **WHEN** the user runs `omnictx cloud aws prod`
-- **THEN** stderr contains `export AWS_PROFILE=prod`, no file is modified, and the exit code is 2
-
 ### Requirement: Account aliases from the omnictx config file
 The account argument (the second word of `omnictx cloud <azure|gcp> <account>`) SHALL first be resolved through a new optional `aliases` config key (`aliases.<provider>.<short> → canonical name or id`), defined only in the omnictx config file (no env var). When the argument matches an alias for that provider, the canonical value is used for matching; otherwise the argument is used as-is. Aliases never apply to the `list`, `on`, `off`, or pin forms.
 
