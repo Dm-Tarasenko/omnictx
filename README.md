@@ -22,12 +22,6 @@ lets you **switch** them without leaving it.
 - **Careful switching.** Validate first, write atomically, change nothing
   beyond what the switch needs, never touch an unparsable file.
 
-Tools like `kube-ps1` (Kubernetes only) and `starship` (separate
-kubernetes/aws/gcloud/azure modules, assembled and configured by hand) cover
-parts of this; omnictx is a single self-contained binary that shows the
-active cloud + kube context out of the box, with one consistent format and
-one set of toggles.
-
 ## Install
 
 ```bash
