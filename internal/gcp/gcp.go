@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"omnictx/internal/cloud"
+	"omnictx/internal/fsatomic"
 	"omnictx/internal/ini"
 )
 
@@ -143,28 +144,7 @@ func Use(lookup LookupEnv, home, name string) error {
 	}
 
 	path := filepath.Join(gcloudDir(lookup, home), "active_config")
-	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".omnictx-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
-	if _, err := tmp.WriteString(name); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsatomic.Write(path, []byte(name), 0o644)
 }
 
 // activeConfigName: CLOUDSDK_ACTIVE_CONFIG_NAME > the single line in

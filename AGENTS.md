@@ -97,6 +97,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   and Directive (the hook's pin table — pure function, exhaustively table-tested).
 - internal/gcp — GCP provider: active-config project from ~/.config/gcloud (offline).
 - internal/ini — tiny stdlib INI reader shared by aws/gcp (no new dependency).
+- internal/fsatomic — the single atomic-write primitive (same-dir temp file +
+  fsync + rename, permission bits preserved) behind every write path: the
+  azure/gcp/kube switches and omnictx's own config.
 - internal/kube — current-context + namespace from kubeconfig ($KUBECONFIG-aware).
   Also the TWO write paths to a foreign file: `kube <context>` rewrites the
   current-context line (parse-before-write, single-line surgery, atomic rename;

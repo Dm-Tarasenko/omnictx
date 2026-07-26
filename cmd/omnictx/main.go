@@ -21,6 +21,7 @@ import (
 	"omnictx/internal/azure"
 	"omnictx/internal/cloud"
 	"omnictx/internal/config"
+	"omnictx/internal/fsatomic"
 	"omnictx/internal/gcp"
 	"omnictx/internal/kube"
 	"omnictx/internal/render"
@@ -300,7 +301,7 @@ func setConfigKeys(path string, pairs ...string) error {
 			lines = append([]string{newLine}, lines...)
 		}
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	return fsatomic.Write(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
 // removeConfigKey deletes the top-level line for the given key from the config
@@ -330,7 +331,7 @@ func removeConfigKey(path, key string) error {
 	if !removed {
 		return nil
 	}
-	return os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644)
+	return fsatomic.Write(path, []byte(strings.Join(kept, "\n")), 0o644)
 }
 
 // runEnable handles `omnictx on` and `omnictx off`. `on` means "show

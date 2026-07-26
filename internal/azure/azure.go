@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"omnictx/internal/cloud"
+	"omnictx/internal/fsatomic"
 )
 
 // utf8BOM is the byte-order mark that azureProfile.json is (in)famously written
@@ -194,28 +195,7 @@ func Use(lookupEnv LookupEnv, home, target string) error {
 		out = append(append([]byte{}, utf8BOM...), out...)
 	}
 
-	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".omnictx-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
-	if _, err := tmp.Write(out); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsatomic.Write(path, out, 0o644)
 }
 
 // resolvePath returns the azureProfile.json path, honoring AZURE_CONFIG_DIR.

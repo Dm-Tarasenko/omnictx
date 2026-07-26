@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"omnictx/internal/fsatomic"
 )
 
 // Sentinel errors returned by WriteNamespace so the CLI can distinguish the
@@ -311,32 +312,8 @@ func replaceNamespaceValue(line, ns string) (string, bool) {
 	return out, true
 }
 
-// atomicWrite replaces path with content via a same-directory temp file and
-// rename, preserving the original permission bits (kubeconfigs are usually
-// 0600). A failure at any step leaves the original file untouched.
+// atomicWrite replaces path with content, defaulting new files to 0600
+// (kubeconfigs are usually private).
 func atomicWrite(path, content string) error {
-	mode := os.FileMode(0o600)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".omnictx-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
-
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsatomic.Write(path, []byte(content), 0o600)
 }
