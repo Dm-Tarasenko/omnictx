@@ -4,9 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // kindConfig is a kubeconfig with comments, two contexts, and a current-context
@@ -82,8 +83,8 @@ func TestContexts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Contexts(kubeconfigEnv(tt.files...), "/nonexistent-home")
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Contexts() = %v, want %v", got, tt.want)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Contexts() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -95,8 +96,8 @@ func TestContextsMissingFields(t *testing.T) {
 
 	got := Contexts(kubeconfigEnv(path), "/nonexistent-home")
 	want := []ContextEntry{{Name: "kind-1", Cluster: "kind-1"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Contexts() = %v, want %v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Contexts() mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -4,8 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"omnictx/internal/cloud"
 )
@@ -92,8 +93,8 @@ func TestConfigurations(t *testing.T) {
 			{Name: "noproject", Account: "me@example.com"},
 			{Name: "work", Project: "my-work-project"},
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Configurations() = %v, want %v", got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("Configurations() mismatch (-want +got):\n%s", diff)
 		}
 	})
 
