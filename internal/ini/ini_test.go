@@ -1,8 +1,9 @@
 package ini
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestParseSectionsAndDefault(t *testing.T) {
@@ -79,8 +80,8 @@ func TestSections(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Sections([]byte(tt.in))
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Sections() = %v, want %v", got, tt.want)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Sections() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

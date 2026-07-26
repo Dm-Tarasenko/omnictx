@@ -4,8 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"omnictx/internal/cloud"
 )
@@ -84,8 +85,8 @@ func TestValidateProfile(t *testing.T) {
 		if !errors.As(err, &unknown) {
 			t.Fatalf("ValidateProfile(nope) = %v, want *UnknownProfileError", err)
 		}
-		if !reflect.DeepEqual(unknown.Available, []string{"default", "prod"}) {
-			t.Errorf("Available = %v, want [default prod]", unknown.Available)
+		if diff := cmp.Diff([]string{"default", "prod"}, unknown.Available); diff != "" {
+			t.Errorf("Available mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -273,8 +274,8 @@ func TestProfiles(t *testing.T) {
 	t.Run("config sections with regions, prefix stripped", func(t *testing.T) {
 		got := Profiles(env(map[string]string{"AWS_CONFIG_FILE": fixture("aws_config_named.ini")}), t.TempDir())
 		want := []Profile{{Name: "default", Region: "us-east-1"}, {Name: "prod", Region: "eu-west-1"}}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Profiles() = %v, want %v", got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("Profiles() mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -293,8 +294,8 @@ func TestProfiles(t *testing.T) {
 			{Name: "prod", Region: "eu-west-1"},
 			{Name: "ci-only"}, // from credentials; no region, no key material
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Profiles() = %v, want %v", got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("Profiles() mismatch (-want +got):\n%s", diff)
 		}
 	})
 

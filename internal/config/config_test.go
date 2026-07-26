@@ -4,9 +4,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func envFunc(m map[string]string) LookupEnv {
@@ -26,8 +27,8 @@ func TestResolveDefaults(t *testing.T) {
 	// No flags, no env, no config at /home -> built-ins.
 	cfg, _ := Resolve(Flags{}, envFunc(nil), "/home")
 	want := Defaults()
-	if !reflect.DeepEqual(cfg, want) {
-		t.Fatalf("Resolve() = %+v, want %+v", cfg, want)
+	if diff := cmp.Diff(want, cfg); diff != "" {
+		t.Fatalf("Resolve() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -40,8 +41,8 @@ func TestResolveConfigFile(t *testing.T) {
 	if cfg.Separator != " | " {
 		t.Errorf("separator = %q, want %q", cfg.Separator, " | ")
 	}
-	if !reflect.DeepEqual(cfg.Segments, []string{SegmentKube, SegmentCloud}) {
-		t.Errorf("segments = %v, want [kube cloud]", cfg.Segments)
+	if diff := cmp.Diff([]string{SegmentKube, SegmentCloud}, cfg.Segments); diff != "" {
+		t.Errorf("segments mismatch (-want +got):\n%s", diff)
 	}
 	// Partial colors map merges over defaults.
 	if cfg.Colors[SegmentAzure] != "green" || cfg.Colors[SegmentKube] != "magenta" {
@@ -55,8 +56,8 @@ func TestResolveConfigFile(t *testing.T) {
 func TestResolveBrokenConfigFallsBack(t *testing.T) {
 	env := map[string]string{"OMNICTX_CONFIG": fixturePath("config_broken.yaml")}
 	cfg, debug := Resolve(Flags{}, envFunc(env), "/home")
-	if !reflect.DeepEqual(cfg, Defaults()) {
-		t.Fatalf("broken config should fall back to defaults, got %+v", cfg)
+	if diff := cmp.Diff(Defaults(), cfg); diff != "" {
+		t.Fatalf("broken config should fall back to defaults (-want +got):\n%s", diff)
 	}
 	if len(debug) == 0 {
 		t.Errorf("expected a debug note about the broken config")
@@ -101,8 +102,8 @@ func TestEnvOverFile(t *testing.T) {
 		"OMNICTX_SEGMENTS": "azure,namespace",
 	}
 	cfg, _ := Resolve(Flags{}, envFunc(env), "/home")
-	if !reflect.DeepEqual(cfg.Segments, []string{SegmentCloud, SegmentNamespace}) {
-		t.Fatalf("segments = %v, want [cloud namespace] (env over file)", cfg.Segments)
+	if diff := cmp.Diff([]string{SegmentCloud, SegmentNamespace}, cfg.Segments); diff != "" {
+		t.Fatalf("segments mismatch, env should win over file (-want +got):\n%s", diff)
 	}
 }
 
@@ -110,8 +111,8 @@ func TestSegmentAliasesAndDedup(t *testing.T) {
 	// az and azure both alias the single cloud slot, so the duplicate is dropped.
 	env := map[string]string{"OMNICTX_SEGMENTS": "az, k8s , ns, azure, bogus"}
 	cfg, _ := Resolve(Flags{}, envFunc(env), "/home")
-	if !reflect.DeepEqual(cfg.Segments, []string{SegmentCloud, SegmentKube, SegmentNamespace}) {
-		t.Fatalf("segments = %v, want [cloud kube namespace] (aliases normalized, dups/unknown dropped)", cfg.Segments)
+	if diff := cmp.Diff([]string{SegmentCloud, SegmentKube, SegmentNamespace}, cfg.Segments); diff != "" {
+		t.Fatalf("segments mismatch, want aliases normalized and dups/unknown dropped (-want +got):\n%s", diff)
 	}
 }
 

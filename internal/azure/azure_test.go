@@ -4,9 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func envFunc(m map[string]string) LookupEnv {
@@ -114,8 +115,8 @@ func TestSubscriptions(t *testing.T) {
 			{Name: "dev-subscription", ID: "0000-aaaa", State: "Enabled", IsDefault: false},
 			{Name: "prod-subscription", ID: "1111-bbbb", State: "Enabled", IsDefault: true},
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Subscriptions() = %v, want %v", got, want)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("Subscriptions() mismatch (-want +got):\n%s", diff)
 		}
 	})
 

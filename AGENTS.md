@@ -18,7 +18,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
 
 ## Stack and dependencies
 - Go (current stable version, pinned in go.mod).
-- Single external dependency: gopkg.in/yaml.v3. Everything else is stdlib.
+- Single external runtime dependency: gopkg.in/yaml.v3. Everything else is
+  stdlib. Test-only dependencies are allowed sparingly: google/go-cmp
+  (cmp.Diff instead of reflect.DeepEqual).
 - Do not add client-go or network libraries.
 
 ## Commands
