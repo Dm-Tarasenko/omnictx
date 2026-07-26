@@ -15,4 +15,4 @@
 
 ## 3. Gate
 
-- [ ] 3.1 Full gate: `make build`, `go vet ./...`, `make test` (race), `make lint` green; manual smoke-test in a terminal: bare `omnictx aws|azure|gcp` pick + Esc, piped bare form prints without pinning, `omnictx aws region`, old `cloud ...` spellings unchanged
+- [x] 3.1 Full gate: `make build`, `go vet ./...`, `make test` (race), `make lint` green; manual smoke-test in a terminal: bare `omnictx aws|azure|gcp` pick + Esc, piped bare form prints without pinning, `omnictx aws region`, old `cloud ...` spellings unchanged

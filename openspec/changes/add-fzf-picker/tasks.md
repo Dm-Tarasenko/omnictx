@@ -22,4 +22,4 @@
 
 - [x] 4.1 Update AGENTS.md: bare `kube` / `ns` descriptions gain the interactive branch (activation condition, selection = the existing switch, cancel = no-op, OMNICTX_IGNORE_FZF opt-out, bare-`ns` kubectl fallback); replace the "ns list is the ONLY online path" sentence with the two-call-site wording; note fzf as an optional external binary alongside the kubectl precedent
 - [x] 4.2 Update README: short "fzf integration" note — install fzf to get fuzzy picking on bare `kube`/`ns`, `OMNICTX_IGNORE_FZF=1` to opt out, `list` always prints the table
-- [ ] 4.3 Full gate: `make build`, `go vet ./...`, `make test` (race), `make lint` green; manually smoke-test in a terminal: pick, Esc-cancel, `OMNICTX_IGNORE_FZF=1`, piped `omnictx kube`, `kube list` still a table
+- [x] 4.3 Full gate: `make build`, `go vet ./...`, `make test` (race), `make lint` green; manually smoke-test in a terminal: pick, Esc-cancel, `OMNICTX_IGNORE_FZF=1`, piped `omnictx kube`, `kube list` still a table

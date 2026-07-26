@@ -2,14 +2,15 @@
 
 ## Purpose
 
-The `omnictx cloud aws <profile>` form: a real, persistent AWS profile switch. It validates the profile offline against the locally configured profiles, persists `aws_profile:` to omnictx's own config file (never touching anything under `~/.aws`), and pins `cloud: aws` — replacing the historical "export AWS_PROFILE" hint-and-exit-2 path. Hook-running shells apply the switch on their next prompt.
+The `omnictx aws <profile>` form (with `omnictx cloud aws <profile>` as an accepted alias): a real, persistent AWS profile switch. It validates the profile offline against the locally configured profiles, persists `aws_profile:` to omnictx's own config file (never touching anything under `~/.aws`), and pins `cloud: aws` — replacing the historical "export AWS_PROFILE" hint-and-exit-2 path. Hook-running shells apply the switch on their next prompt.
 
 ## Requirements
 
-### Requirement: Switch the active AWS profile via `omnictx cloud aws <profile>`
-The CLI SHALL provide `omnictx cloud aws <profile>` that validates `<profile>`
-against the locally configured profiles (the names returned by the offline
-profile listing over `~/.aws/config` + `~/.aws/credentials`, honoring
+### Requirement: Switch the active AWS profile via `omnictx aws <profile>`
+The CLI SHALL provide `omnictx aws <profile>` — with `omnictx cloud aws
+<profile>` as an accepted alias dispatching to the same code — that validates
+`<profile>` against the locally configured profiles (the names returned by the
+offline profile listing over `~/.aws/config` + `~/.aws/credentials`, honoring
 `AWS_CONFIG_FILE`) and, on success, writes `aws_profile: <profile>` to the
 omnictx config file (path resolved as `OMNICTX_CONFIG` >
 `~/.config/omnictx/config.yaml`) via the same single-key write machinery as
@@ -25,41 +26,46 @@ output), matching the gcp/azure switches; hook-running shells apply the switch
 on their next prompt.
 
 #### Scenario: Successful switch persists profile and pins the cloud
-- **WHEN** `~/.aws/config` defines `[profile digital-dev]` and the user runs `omnictx cloud aws digital-dev`
+- **WHEN** `~/.aws/config` defines `[profile digital-dev]` and the user runs `omnictx aws digital-dev`
 - **THEN** the config file contains `aws_profile: digital-dev` and `cloud: aws`, other keys and comments are unchanged, nothing under `~/.aws` is modified, and the exit code is 0
 
+#### Scenario: The cloud spelling behaves identically
+- **WHEN** the user runs `omnictx cloud aws digital-dev` for the same profile
+- **THEN** the result is identical to `omnictx aws digital-dev`
+
 #### Scenario: Profile present only in credentials is accepted
-- **WHEN** `~/.aws/credentials` defines `[ci-bot]` and `~/.aws/config` does not mention it, and the user runs `omnictx cloud aws ci-bot`
+- **WHEN** `~/.aws/credentials` defines `[ci-bot]` and `~/.aws/config` does not mention it, and the user runs `omnictx aws ci-bot`
 - **THEN** the config file contains `aws_profile: ci-bot` and the exit code is 0
 
 #### Scenario: Unknown profile is rejected
-- **WHEN** no local profile named `nope` exists and the user runs `omnictx cloud aws nope`
+- **WHEN** no local profile named `nope` exists and the user runs `omnictx aws nope`
 - **THEN** nothing is written, an error naming the unknown profile goes to stderr, and the exit code is 2
 
 #### Scenario: Switch under the mute flips state but not visibility
-- **WHEN** the config file contains `enabled: false` and `kube: true`, and the user runs `omnictx cloud aws digital-dev` for an existing profile
+- **WHEN** the config file contains `enabled: false` and `kube: true`, and the user runs `omnictx aws digital-dev` for an existing profile
 - **THEN** the config file contains `aws_profile: digital-dev` and `cloud: aws`, while `enabled: false` and `kube: true` are unchanged
 
 #### Scenario: Unreadable AWS sources fail loudly
-- **WHEN** neither `~/.aws/config` nor `~/.aws/credentials` can be read and the user runs `omnictx cloud aws anything`
+- **WHEN** neither `~/.aws/config` nor `~/.aws/credentials` can be read and the user runs `omnictx aws anything`
 - **THEN** nothing is written, an error goes to stderr, and the exit code is 1
 
 ### Requirement: Aliases resolve before validation
-`omnictx cloud aws <short>` SHALL resolve `<short>` through
-`aliases.aws.<short>` from the omnictx config before validating, identically to
-the gcp/azure switch paths.
+`omnictx aws <short>` — and the `cloud aws <short>` spelling — SHALL resolve
+`<short>` through `aliases.aws.<short>` from the omnictx config before
+validating, identically to the gcp/azure switch paths.
 
 #### Scenario: Alias resolves to a canonical profile
-- **WHEN** the config contains `aliases: {aws: {dev: digital-dev}}` and `[profile digital-dev]` exists, and the user runs `omnictx cloud aws dev`
+- **WHEN** the config contains `aliases: {aws: {dev: digital-dev}}` and `[profile digital-dev]` exists, and the user runs `omnictx aws dev`
 - **THEN** the config file contains `aws_profile: digital-dev` and the exit code is 0
 
 ### Requirement: `region` and `list` are reserved words
-The words `region` and `list` SHALL NOT be accepted as profile arguments:
-`omnictx cloud aws list` keeps its listing behavior and `omnictx cloud aws
-region ...` dispatches to the region subcommand.
+The words `region` and `list` SHALL NOT be accepted as profile arguments in
+either spelling: `omnictx aws list` / `omnictx cloud aws list` keep the
+listing behavior, and `omnictx aws region ...` / `omnictx cloud aws region
+...` dispatch to the region subcommand.
 
 #### Scenario: Reserved word does not switch
-- **WHEN** the user runs `omnictx cloud aws list`
+- **WHEN** the user runs `omnictx aws list`
 - **THEN** the profile table is printed and `aws_profile:` is not written
 
 ### Requirement: The export-hint fallback is removed
