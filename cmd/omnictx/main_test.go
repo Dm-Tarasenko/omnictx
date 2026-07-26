@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,6 +127,24 @@ func TestUsageListsCloudSubcommand(t *testing.T) {
 		"cloud aws region [<region>|auto]",
 		"AWS_PROFILE",   // the manual-export session pin is worth calling out
 		"OMNICTX_CLOUD", // the per-session override is worth calling out
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// The top-level provider commands must be listed under Subcommands as the
+// primary forms, with the cloud spellings noted as aliases.
+func TestUsageListsProviderCommands(t *testing.T) {
+	var sb strings.Builder
+	printUsage(&sb)
+	out := sb.String()
+
+	for _, want := range []string{
+		"aws|azure|gcp [<account>|list]",
+		"aws region [<region>|auto]",
+		"aliases",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("usage missing %q\n---\n%s", want, out)
@@ -601,6 +622,491 @@ contexts:
 	if data, _ := os.ReadFile(path); string(data) != cfg {
 		t.Errorf("kubeconfig must not be modified:\n%s", data)
 	}
+}
+
+// pickRecorder is the injected fzf stand-in for the interactive-arm tests: it
+// records the items and header it was offered and returns a fixed result.
+type pickRecorder struct {
+	sel    string
+	ok     bool
+	err    error
+	called bool
+	items  []string
+	header string
+}
+
+func (p *pickRecorder) pick(items []string, header string) (string, bool, error) {
+	p.called = true
+	p.items = items
+	p.header = header
+	return p.sel, p.ok, p.err
+}
+
+// The interactive no-argument arm of `kube`: the (injected) picker drives the
+// same switch path as `kube <context>`; cancel and fzf failure never write;
+// the non-interactive value keeps today's print byte-identical.
+func TestRunKubeInteractivePick(t *testing.T) {
+	t.Run("selection switches the context via the switch path", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		p := &pickRecorder{sel: "kind-2", ok: true}
+		var stdout, stderr strings.Builder
+		if code := runKubeWith(nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		want := strings.Replace(kindKubeconfig, "current-context: kind-1", "current-context: kind-2", 1)
+		if string(data) != want {
+			t.Errorf("kubeconfig after picker switch:\n%s\nwant:\n%s", data, want)
+		}
+		if stdout.String() != "" {
+			t.Errorf("switch success must be silent, got %q", stdout.String())
+		}
+		if got := strings.Join(p.items, ","); got != "kind-1,kind-2" {
+			t.Errorf("picker items = %q, want the kube list names in order", got)
+		}
+		if !strings.Contains(p.header, "kind-1") {
+			t.Errorf("header %q should name the current context", p.header)
+		}
+	})
+
+	t.Run("cancel writes nothing", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{ok: false}
+		if code := runKubeWith(nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("cancel must leave the kubeconfig byte-identical:\n%s", data)
+		}
+		if stdout.String() != "" {
+			t.Errorf("cancel must not print, got %q", stdout.String())
+		}
+	})
+
+	t.Run("fzf exec failure falls back to the print", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{err: errors.New("fzf vanished")}
+		if code := runKubeWith(nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "kind-1\n" {
+			t.Errorf("stdout = %q, want the current-context print", stdout.String())
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("fzf failure must not modify the kubeconfig:\n%s", data)
+		}
+	})
+
+	t.Run("non-interactive value keeps today's print byte-identical", func(t *testing.T) {
+		kubeTestConfig(t, kindKubeconfig)
+		var withNil, plain strings.Builder
+		var stderr strings.Builder
+		if code := runKubeWith(nil, &withNil, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if code := runKube(nil, &plain, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if withNil.String() != "kind-1\n" || withNil.String() != plain.String() {
+			t.Errorf("non-interactive print = %q, want %q (runKube: %q)", withNil.String(), "kind-1\n", plain.String())
+		}
+	})
+
+	t.Run("zero contexts never invoke the picker", func(t *testing.T) {
+		t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{sel: "kind-1", ok: true}
+		if code := runKubeWith(nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if p.called {
+			t.Error("picker must not run with zero contexts")
+		}
+		if stdout.String() != "" {
+			t.Errorf("stdout = %q, want empty", stdout.String())
+		}
+	})
+
+	t.Run("selection under a persisted mute still switches", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+		t.Setenv("OMNICTX_CONFIG", cfgPath)
+		orig := "enabled: false\nkube: false\n"
+		if err := os.WriteFile(cfgPath, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{sel: "kind-2", ok: true}
+		if code := runKubeWith(nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		want := strings.Replace(kindKubeconfig, "current-context: kind-1", "current-context: kind-2", 1)
+		if string(data) != want {
+			t.Errorf("the switch must happen under the mute:\n%s", data)
+		}
+		if cfg, _ := os.ReadFile(cfgPath); string(cfg) != orig {
+			t.Errorf("picker selection must not touch the enabled/kube toggles:\n%s", cfg)
+		}
+	})
+}
+
+// The interactive no-argument arm of `ns`: the (injected) kubectl fetch and
+// picker drive the same switch path as `ns <name>`; every failure degrades to
+// the offline print with exit 0 (bare `ns` never fails loudly, unlike `ns
+// list`); the non-interactive value never invokes the fetch.
+func TestRunNamespaceInteractivePick(t *testing.T) {
+	fetchOK := func(names ...string) nsFetchFunc {
+		return func(io.Writer) ([]string, error) { return names, nil }
+	}
+
+	t.Run("selection rewrites the active context's namespace", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig) // kind-1 current, namespace payments
+		p := &pickRecorder{sel: "staging", ok: true}
+		var stdout, stderr strings.Builder
+		code := runNamespaceWith(nil, &stdout, &stderr, p.pick, fetchOK("default", "payments", "staging"))
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		data, _ := os.ReadFile(path)
+		want := strings.Replace(kindKubeconfig, "namespace: payments", "namespace: staging", 1)
+		if string(data) != want {
+			t.Errorf("kubeconfig after picker switch:\n%s\nwant:\n%s", data, want)
+		}
+		if stdout.String() != "" {
+			t.Errorf("switch success must be silent, got %q", stdout.String())
+		}
+		if got := strings.Join(p.items, ","); got != "default,payments,staging" {
+			t.Errorf("picker items = %q, want the fetched namespaces", got)
+		}
+		if !strings.Contains(p.header, "payments") {
+			t.Errorf("header %q should name the active namespace", p.header)
+		}
+	})
+
+	t.Run("cancel writes nothing", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{ok: false}
+		code := runNamespaceWith(nil, &stdout, &stderr, p.pick, fetchOK("default"))
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("cancel must leave the kubeconfig byte-identical:\n%s", data)
+		}
+		if stdout.String() != "" {
+			t.Errorf("cancel must not print, got %q", stdout.String())
+		}
+	})
+
+	t.Run("fzf exec failure prints the current namespace", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{err: errors.New("fzf vanished")}
+		code := runNamespaceWith(nil, &stdout, &stderr, p.pick, fetchOK("default"))
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "payments\n" {
+			t.Errorf("stdout = %q, want the current-namespace print", stdout.String())
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("fzf failure must not modify the kubeconfig:\n%s", data)
+		}
+	})
+
+	t.Run("kubectl failure warns and prints the current namespace", func(t *testing.T) {
+		path := kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{sel: "staging", ok: true}
+		fetch := func(io.Writer) ([]string, error) { return nil, errors.New("cluster unreachable") }
+		code := runNamespaceWith(nil, &stdout, &stderr, p.pick, fetch)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 (bare ns keeps its always-exit-0 contract)", code)
+		}
+		if p.called {
+			t.Error("picker must not run when the namespace fetch fails")
+		}
+		if !strings.Contains(stderr.String(), "warning") || !strings.Contains(stderr.String(), "cluster unreachable") {
+			t.Errorf("stderr should carry a warning with the cause:\n%s", stderr.String())
+		}
+		if stdout.String() != "payments\n" {
+			t.Errorf("stdout = %q, want the current-namespace print", stdout.String())
+		}
+		if data, _ := os.ReadFile(path); string(data) != kindKubeconfig {
+			t.Errorf("kubectl failure must not modify the kubeconfig:\n%s", data)
+		}
+	})
+
+	t.Run("kubectl missing names kubectl in the warning", func(t *testing.T) {
+		kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{}
+		fetch := func(io.Writer) ([]string, error) { return nil, fmt.Errorf("exec: %w", exec.ErrNotFound) }
+		if code := runNamespaceWith(nil, &stdout, &stderr, p.pick, fetch); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if !strings.Contains(stderr.String(), "kubectl") {
+			t.Errorf("stderr must name kubectl as the missing tool:\n%s", stderr.String())
+		}
+		if stdout.String() != "payments\n" {
+			t.Errorf("stdout = %q, want the current-namespace print", stdout.String())
+		}
+	})
+
+	t.Run("non-interactive value never invokes the fetch", func(t *testing.T) {
+		kubeTestConfig(t, kindKubeconfig)
+		var stdout, stderr strings.Builder
+		fetch := func(io.Writer) ([]string, error) {
+			t.Error("kubectl fetch must not run non-interactively")
+			return nil, nil
+		}
+		if code := runNamespaceWith(nil, &stdout, &stderr, nil, fetch); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "payments\n" {
+			t.Errorf("stdout = %q, want today's offline print", stdout.String())
+		}
+	})
+
+	t.Run("header shows default when the context sets no namespace", func(t *testing.T) {
+		cfg := strings.Replace(kindKubeconfig, "      namespace: payments\n", "", 1)
+		kubeTestConfig(t, cfg)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{ok: false} // cancel; only the header matters here
+		if code := runNamespaceWith(nil, &stdout, &stderr, p.pick, fetchOK("default", "staging")); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if !strings.Contains(p.header, "default") {
+			t.Errorf("header %q should fall back to default", p.header)
+		}
+	})
+}
+
+// The bare top-level provider form is read-only: it prints the account the
+// list table marks CURRENT and never writes a pin — unlike `cloud <provider>`.
+func TestRunProviderBarePrint(t *testing.T) {
+	t.Run("aws prints the profile from env", func(t *testing.T) {
+		awsListEnv(t)
+		t.Setenv("AWS_PROFILE", "prod")
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("aws", nil, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if stdout.String() != "prod\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "prod\n")
+		}
+	})
+
+	t.Run("aws falls back to default", func(t *testing.T) {
+		awsListEnv(t)
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("aws", nil, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "default\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "default\n")
+		}
+	})
+
+	t.Run("gcp prints the active configuration", func(t *testing.T) {
+		gcloudUseEnv(t)
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", nil, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "default\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "default\n")
+		}
+	})
+
+	t.Run("azure prints the default subscription", func(t *testing.T) {
+		azureUseEnv(t, "azureProfile_default.json")
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("azure", nil, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "prod-subscription\n" {
+			t.Errorf("stdout = %q, want %q", stdout.String(), "prod-subscription\n")
+		}
+	})
+
+	t.Run("bare form never pins", func(t *testing.T) {
+		gcloudUseEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", nil, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("bare provider print must not create/modify the omnictx config")
+		}
+	})
+
+	t.Run("zero accounts stay quiet and never invoke the picker", func(t *testing.T) {
+		t.Setenv("CLOUDSDK_CONFIG", t.TempDir()) // no configurations dir
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		p := &pickRecorder{sel: "work", ok: true}
+		if code := runProvider("gcp", nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if p.called {
+			t.Error("picker must not run with zero accounts")
+		}
+		if stdout.String() != "" {
+			t.Errorf("stdout = %q, want empty", stdout.String())
+		}
+	})
+}
+
+// The interactive bare provider form: a selection performs the exact
+// `<provider> <account>` switch (including the post-switch pin); cancel and
+// fzf failure never write.
+func TestRunProviderInteractivePick(t *testing.T) {
+	t.Run("selection switches and pins", func(t *testing.T) {
+		dir := gcloudUseEnv(t)
+		cfgPath := cloudTestConfig(t)
+		p := &pickRecorder{sel: "work", ok: true}
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(filepath.Join(dir, "active_config")); string(data) != "work" {
+			t.Errorf("active_config = %q, want work", data)
+		}
+		if cfg, _ := os.ReadFile(cfgPath); !strings.Contains(string(cfg), "cloud: gcp") {
+			t.Errorf("selection must pin the provider like the typed switch:\n%s", cfg)
+		}
+		if stdout.String() != "" {
+			t.Errorf("switch success must be silent, got %q", stdout.String())
+		}
+		if got := strings.Join(p.items, ","); got != "default,work" {
+			t.Errorf("picker items = %q, want the list table names", got)
+		}
+		if !strings.Contains(p.header, "default") {
+			t.Errorf("header %q should name the current account", p.header)
+		}
+	})
+
+	t.Run("cancel writes nothing", func(t *testing.T) {
+		dir := gcloudUseEnv(t)
+		cfgPath := cloudTestConfig(t)
+		p := &pickRecorder{ok: false}
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if data, _ := os.ReadFile(filepath.Join(dir, "active_config")); string(data) != "default" {
+			t.Errorf("active_config = %q, want default (untouched)", data)
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("cancel must not create/modify the omnictx config")
+		}
+		if stdout.String() != "" {
+			t.Errorf("cancel must not print, got %q", stdout.String())
+		}
+	})
+
+	t.Run("fzf exec failure falls back to the print", func(t *testing.T) {
+		dir := gcloudUseEnv(t)
+		cfgPath := cloudTestConfig(t)
+		p := &pickRecorder{err: errors.New("fzf vanished")}
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "default\n" {
+			t.Errorf("stdout = %q, want the active-account print", stdout.String())
+		}
+		if data, _ := os.ReadFile(filepath.Join(dir, "active_config")); string(data) != "default" {
+			t.Errorf("active_config = %q, want default (untouched)", data)
+		}
+		if _, err := os.ReadFile(cfgPath); err == nil {
+			t.Error("fallback must not create/modify the omnictx config")
+		}
+	})
+}
+
+// The top-level argument forms are aliases of the `cloud <provider> ...`
+// spellings: identical output, identical writes, identical exit codes.
+func TestRunProviderArgFormsMatchCloud(t *testing.T) {
+	t.Run("list equals cloud list", func(t *testing.T) {
+		awsListEnv(t)
+		cloudTestConfig(t)
+		var top, old, stderr strings.Builder
+		if code := runProvider("aws", []string{"list"}, &top, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if code := runCloud([]string{"aws", "list"}, &old, &stderr); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if top.String() != old.String() || top.String() == "" {
+			t.Errorf("omnictx aws list = %q, cloud aws list = %q — must be identical and non-empty", top.String(), old.String())
+		}
+	})
+
+	t.Run("switch equals cloud switch", func(t *testing.T) {
+		dir := gcloudUseEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", []string{"work"}, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(filepath.Join(dir, "active_config")); string(data) != "work" {
+			t.Errorf("active_config = %q, want work", data)
+		}
+		if cfg, _ := os.ReadFile(cfgPath); !strings.Contains(string(cfg), "cloud: gcp") {
+			t.Errorf("top-level switch must pin like the cloud spelling:\n%s", cfg)
+		}
+	})
+
+	t.Run("aws region persists and prints like the cloud spelling", func(t *testing.T) {
+		awsListEnv(t)
+		cfgPath := cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("aws", []string{"region", "eu-central-1"}, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+		}
+		if data, _ := os.ReadFile(cfgPath); !strings.Contains(string(data), "aws_region: eu-central-1") {
+			t.Errorf("config missing aws_region after top-level region form:\n%s", data)
+		}
+		stdout.Reset()
+		if code := runProvider("aws", []string{"region"}, &stdout, &stderr, nil); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if stdout.String() != "eu-central-1\n" {
+			t.Errorf("stdout = %q, want the effective region", stdout.String())
+		}
+	})
+
+	t.Run("unknown account exits 2 like the cloud spelling", func(t *testing.T) {
+		gcloudUseEnv(t)
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", []string{"prod"}, &stdout, &stderr, nil); code != 2 {
+			t.Fatalf("exit code = %d, want 2", code)
+		}
+	})
+
+	t.Run("too many arguments exit 2 with usage", func(t *testing.T) {
+		gcloudUseEnv(t)
+		cloudTestConfig(t)
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", []string{"work", "extra"}, &stdout, &stderr, nil); code != 2 {
+			t.Fatalf("exit code = %d, want 2", code)
+		}
+		if !strings.Contains(stderr.String(), "usage:") {
+			t.Errorf("stderr should show usage:\n%s", stderr.String())
+		}
+	})
 }
 
 // cloudTestConfig points OMNICTX_CONFIG at a temp file and neutralizes

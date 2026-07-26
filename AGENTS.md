@@ -7,7 +7,10 @@ and can also **switch** them (kube-context, gcloud configuration, Azure
 subscription). Render mode — the code that runs on every shell prompt — works
 on local config files directly, without kubectl/az/aws/gcloud and without
 network access. Explicit interactive subcommands may shell out to `kubectl`;
-today `ns list` is the ONLY such online path (the switches stay file-based).
+the only online paths are `ns list` and the interactive bare-`ns` picker (the
+switches stay file-based). Bare `kube`/`ns` upgrade to an fzf fuzzy pick when
+interactive — fzf, like kubectl, is an optional external binary, never a Go
+dependency.
 
 ## Core invariant
 RENDER MODE NEVER breaks the prompt line and never writes anything: any error →
@@ -65,6 +68,18 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   removes the key idempotently; bare form prints the effective region:
   AWS_REGION > AWS_DEFAULT_REGION > override > profile config; neither form
   touches the display toggles),
+  `aws|azure|gcp [<account>|list]` + `aws region [<region>|auto]` (top-level
+  provider words: every argument form dispatches to the exact same code as its
+  `cloud <provider> ...` spelling, which stays an accepted alias — no
+  deprecation; bare `omnictx <provider>` is the two-branch picker form:
+  non-interactive it prints the account the `list` table marks CURRENT
+  (nothing configured locally → prints nothing) and NEVER writes — unlike bare
+  `cloud <provider>`, which pins, so a piped `omnictx aws` cannot mutate
+  state; interactive (same Decide inputs) it feeds the provider's account
+  names — the `list` rows — to fzf with the current account in the header, and
+  a selection performs the `<provider> <account>` switch incl. the post-switch
+  pin; cancel → no write exit 0, fzf exec failure → the print, zero accounts →
+  fzf never invoked),
   `hook --shell <bash|zsh>` (the per-prompt invocation emitted by `init`
   snippets; render-mode discipline — never writes, always exit 0. Output is
   exactly three newline-terminated lines: AWS_PROFILE directive, AWS_REGION
@@ -78,7 +93,14 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   the mute controls display, not state — matching gcp/azure/kube, whose
   switches take effect under the mute too),
   `kube [<context>|list|on|off]` (switch current-context in kubeconfig / print
-  current / list all / toggle the kube segment via config key `kube:`; `on`
+  current / list all / toggle the kube segment via config key `kube:`; the bare
+  form becomes an fzf fuzzy pick when stdout is a TTY, `fzf` is on PATH, and
+  `OMNICTX_IGNORE_FZF` is empty (any non-empty value opts out, mirroring
+  KUBECTX_IGNORE_FZF): the context names — same dedup/order as `list` — go to
+  fzf with the current context in the header, a selection performs exactly the
+  `kube <context>` switch, cancel writes nothing and exits 0, an fzf exec
+  failure degrades to the print; `list` stays the read-only table everywhere;
+  `on`
   issued while the global mute is persisted (`enabled: false`) lifts the mute
   exposing ONLY the kube segment: it writes `enabled: true` AND `cloud: none` —
   `off` never touches `enabled`; reserved
@@ -86,10 +108,18 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   `ns [<name>|list]` (alias `namespace`; switch the namespace of the active
   kube-context in the kubeconfig / print current; name validated as a DNS-1123
   label, invalid → exit 2; no active context / context not defined / broken
-  source → exit 1; `list` execs `kubectl get namespaces -o name
-  --request-timeout=10s` — the only online code path in the binary — and prints
+  source → exit 1; the bare form runs the same fzf picker as bare `kube` over
+  the kubectl-sourced namespace list (the same invocation as `ns list`), with
+  the active namespace — `default` when unset — in the header; selection
+  performs exactly the `ns <name>` switch, cancel writes nothing; here kubectl
+  missing/failing warns on stderr and degrades to the current-namespace print,
+  exit 0 — bare `ns` keeps its always-exit-0 contract; `list` execs `kubectl
+  get namespaces -o name --request-timeout=10s` — kubectl invocation is
+  confined to exactly two call sites, `ns list` and the interactive bare `ns`
+  — and prints
   a CURRENT/NAME table marking the active context's namespace (`default` when
-  unset); kubectl missing or failing → stderr passthrough, exit 1, no write).
+  unset); kubectl missing or failing in `list` → stderr passthrough, exit 1,
+  no write).
 - internal/cloud — Provider interface + active-cloud Select (azure|aws|gcp|auto|none).
 - internal/azure — Azure provider: active subscription from azureProfile.json (UTF-8 BOM).
 - internal/aws — AWS provider: profile (+region) from ~/.aws/config (offline; no STS).
@@ -112,6 +142,15 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   child of the `context:` mapping; target = first $KUBECONFIG file defining the
   active context; atomic rename). Both writes happen only on explicit user
   command — render mode never writes anything.
+- internal/picker — the bare-command fuzzy picker: pure activation decision
+  `Decide(stdoutIsTTY, fzfOnPath, ignoreFzf)` (true only for TTY ∧ fzf-on-PATH
+  ∧ empty OMNICTX_IGNORE_FZF; exhaustively table-tested like aws.Directive) and
+  the thin `Run` fzf shell-out (items on stdin one per line, `--header`, stdout
+  captured/trimmed, stderr inherited; non-zero exit = cancel, exec failure =
+  the caller degrades to its non-interactive print; empty items never invoke
+  fzf). The decision inputs are gathered at the dispatch edge in main.go and
+  injected into runKube/runNamespace as a pick function (nil =
+  non-interactive), keeping those functions deterministic over parameters.
 - internal/render — format, ANSI colors, bash (\[ \]) / zsh (%{ %}) escaping; the
   cloud slot is provider-driven (label from the active provider, color colors["cloud"]
   with optional per-provider colors[key] override).
@@ -151,7 +190,14 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   empty); cloud Select (explicit pin / auto-by-priority / none); the full
   aws.Directive pin table (vault / manual pin / hook-owned / cleared); hook
   three-line contract incl. disabled and broken-config degradation; snippet
-  directive application (export+marker, unset both, manual value untouched).
+  directive application (export+marker, unset both, manual value untouched);
+  the picker Decide table (TTY × fzf × opt-out) and the interactive bare
+  kube/ns arms with an injected pick/fetch (selection reuses the switch path,
+  cancel and fzf-error write nothing, kubectl failure warns and degrades with
+  exit 0, the non-interactive value keeps the print byte-identical); the
+  top-level provider forms (bare print never pins, selection switches AND
+  pins like the typed switch, argument forms identical to the `cloud ...`
+  spellings, zero accounts never invoke the pick).
 
 ## Design decisions (resolved during implementation)
 - The `namespace` segment is visually coupled to `kube` and rendered as
