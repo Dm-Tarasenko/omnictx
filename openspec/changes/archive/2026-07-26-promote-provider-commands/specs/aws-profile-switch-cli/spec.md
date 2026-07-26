@@ -1,10 +1,6 @@
-# aws-profile-switch-cli
+# aws-profile-switch-cli — delta for promote-provider-commands
 
-## Purpose
-
-The `omnictx aws <profile>` form (with `omnictx cloud aws <profile>` as an accepted alias): a real, persistent AWS profile switch. It validates the profile offline against the locally configured profiles, persists `aws_profile:` to omnictx's own config file (never touching anything under `~/.aws`), and pins `cloud: aws` — replacing the historical "export AWS_PROFILE" hint-and-exit-2 path. Hook-running shells apply the switch on their next prompt.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Switch the active AWS profile via `omnictx aws <profile>`
 The CLI SHALL provide `omnictx aws <profile>` — with `omnictx cloud aws
@@ -67,11 +63,3 @@ listing behavior, and `omnictx aws region ...` / `omnictx cloud aws region
 #### Scenario: Reserved word does not switch
 - **WHEN** the user runs `omnictx aws list`
 - **THEN** the profile table is printed and `aws_profile:` is not written
-
-### Requirement: The export-hint fallback is removed
-`omnictx cloud aws <profile>` SHALL NOT print the historical "AWS has no
-persistent current profile; use export AWS_PROFILE" hint; the switch is real.
-
-#### Scenario: No hint on a valid switch
-- **WHEN** the user runs `omnictx cloud aws digital-dev` for an existing profile
-- **THEN** stderr does not contain `export AWS_PROFILE` and the exit code is 0

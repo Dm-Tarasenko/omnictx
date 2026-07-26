@@ -24,6 +24,7 @@ import (
 	"omnictx/internal/fsatomic"
 	"omnictx/internal/gcp"
 	"omnictx/internal/kube"
+	"omnictx/internal/picker"
 	"omnictx/internal/render"
 	"omnictx/internal/shellinit"
 )
@@ -50,10 +51,12 @@ func main() {
 			os.Exit(runEnable(false))
 		case "cloud":
 			os.Exit(runCloud(args[1:], os.Stdout, os.Stderr))
+		case "aws", "azure", "gcp":
+			os.Exit(runProvider(args[0], args[1:], os.Stdout, os.Stderr, interactivePicker()))
 		case "kube":
-			os.Exit(runKube(args[1:], os.Stdout, os.Stderr))
+			os.Exit(runKubeWith(args[1:], os.Stdout, os.Stderr, interactivePicker()))
 		case "ns", "namespace":
-			os.Exit(runNamespace(args[1:], os.Stdout, os.Stderr))
+			os.Exit(runNamespaceWith(args[1:], os.Stdout, os.Stderr, interactivePicker(), kubectlNamespaces))
 		case "hook":
 			runHook(args[1:], os.Stdout)
 			os.Exit(0)
@@ -194,6 +197,15 @@ Usage:
 Subcommands:
   init <bash|zsh>   shell integration (add to ~/.bashrc / ~/.zshrc)
   on / off          persist enabled: true/false to config file (affects all future shells)
+  aws|azure|gcp [<account>|list]
+                    switch or list that provider's accounts; with no argument
+                    prints the active account (or picks one via fzf in a
+                    terminal — the pick performs the switch, a plain print
+                    never changes anything); the "cloud <provider> ..."
+                    spellings below stay as accepted aliases
+  aws region [<region>|auto]
+                    persist an aws_region override; "auto" clears it, no
+                    argument prints the effective region
   cloud [azure|aws|gcp|auto|none|on|off]
                     persist the active cloud to config file; off hides the slot,
                     on returns to auto-detect; without an argument prints the
@@ -225,7 +237,7 @@ Subcommands:
                     switch the namespace of the active kube-context (rewrites
                     that context entry in kubeconfig); no argument prints the
                     current namespace. "list" queries the cluster via kubectl
-                    (needs kubectl on PATH) — the only online subcommand; the
+                    (needs kubectl on PATH); the
                     prompt render itself always stays offline
 
 Flags:
@@ -465,21 +477,160 @@ func runCloud(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const providerUsage = "usage: omnictx <azure|aws|gcp> [<account>|list]\n" +
+	"       omnictx aws region [<region>|auto]"
+
+// runProvider handles the top-level provider words: `omnictx <azure|aws|gcp>
+// [<account>|list]` and `omnictx aws region ...`. Every argument form
+// dispatches to the exact same code as its `cloud <provider> ...` spelling
+// (which stays an accepted alias); only the bare form is new. Bare, it prints
+// the provider's active account — or runs the fzf picker when interactive —
+// and, unlike bare `cloud <provider>` (an explicit pin), it is read-only: a
+// piped `omnictx aws` cannot mutate state. A picker SELECTION switches (and
+// therefore pins, like the typed switch), because that is an explicit user
+// action.
+func runProvider(provider string, args []string, stdout, stderr io.Writer, pick pickFunc) int {
+	home, _ := os.UserHomeDir()
+
+	if len(args) == 0 {
+		// The account list gates everything: with nothing configured locally
+		// the bare form stays quiet (like an empty list table) and fzf is
+		// never invoked — CurrentProfile/CurrentConfiguration would otherwise
+		// invent a "default" that matches no real account.
+		names := providerAccountNames(provider, home)
+		current := providerCurrentAccount(provider, home)
+		if pick != nil && len(names) > 0 {
+			sel, ok, err := pick(names, "current: "+current)
+			if err == nil {
+				if !ok {
+					return 0
+				}
+				return runCloudSwitch(provider, sel, home, stderr)
+			}
+			// fzf could not be executed: degrade to the print below.
+		}
+		if len(names) > 0 && current != "" {
+			_, _ = fmt.Fprintln(stdout, current)
+		}
+		return 0
+	}
+	if provider == "aws" && strings.ToLower(strings.TrimSpace(args[0])) == "region" {
+		return runAwsRegion(args[1:], home, stdout, stderr)
+	}
+	if len(args) > 1 {
+		_, _ = fmt.Fprintln(stderr, providerUsage)
+		return 2
+	}
+	if strings.ToLower(strings.TrimSpace(args[0])) == "list" {
+		if provider == "azure" {
+			warnAll(stderr, azure.Check(os.LookupEnv, home))
+		}
+		printCloudList(stdout, provider, home)
+		return 0
+	}
+	return runCloudSwitch(provider, args[0], home, stderr)
+}
+
+// providerAccountNames returns the provider's local account names — the same
+// rows, in the same order, as the `cloud <provider> list` table (and the fzf
+// item list of the bare form).
+func providerAccountNames(provider, home string) []string {
+	switch provider {
+	case "aws":
+		profiles := aws.Profiles(os.LookupEnv, home)
+		names := make([]string, len(profiles))
+		for i, p := range profiles {
+			names[i] = p.Name
+		}
+		return names
+	case "gcp":
+		configs := gcp.Configurations(os.LookupEnv, home)
+		names := make([]string, len(configs))
+		for i, c := range configs {
+			names[i] = c.Name
+		}
+		return names
+	case "azure":
+		subs := azure.Subscriptions(os.LookupEnv, home)
+		names := make([]string, len(subs))
+		for i, s := range subs {
+			names[i] = s.Name
+		}
+		return names
+	}
+	return nil
+}
+
+// providerCurrentAccount returns the provider's active account — the value the
+// `list` table marks CURRENT: the AWS profile (AWS_PROFILE > AWS_VAULT >
+// default), the gcloud configuration (env > active_config > default), or the
+// Azure default subscription's name. Empty when nothing is resolvable.
+func providerCurrentAccount(provider, home string) string {
+	switch provider {
+	case "aws":
+		return aws.CurrentProfile(os.LookupEnv)
+	case "gcp":
+		return gcp.CurrentConfiguration(os.LookupEnv, home)
+	case "azure":
+		for _, s := range azure.Subscriptions(os.LookupEnv, home) {
+			if s.IsDefault {
+				return s.Name
+			}
+		}
+	}
+	return ""
+}
+
 const kubeUsage = "usage: omnictx kube [<context>|list|on|off]"
 
-// runKube handles `omnictx kube [<context>|list|on|off]`. No argument prints
-// the current context; the reserved words (contexts with those literal names
+// pickFunc is the interactive-selection hook injected into runKubeWith and
+// runNamespaceWith: picker.Run when the activation decision is true, nil for
+// every non-interactive invocation (scripts, pipes, fzf absent, opt-out set).
+// Keeping the decision at the dispatch edge keeps these functions
+// deterministic over their parameters.
+type pickFunc func(items []string, header string) (selection string, ok bool, err error)
+
+// interactivePicker computes the picker activation at the dispatch edge:
+// picker.Run when stdout is a terminal, fzf is on PATH, and OMNICTX_IGNORE_FZF
+// is empty (any non-empty value opts out); nil otherwise. Only the bare
+// no-argument arms consume the result — `list` and the switch forms ignore it.
+func interactivePicker() pickFunc {
+	_, lookErr := exec.LookPath("fzf")
+	if !picker.Decide(isTTY(os.Stdout), lookErr == nil, os.Getenv("OMNICTX_IGNORE_FZF")) {
+		return nil
+	}
+	return picker.Run
+}
+
+// runKube is the non-interactive entry point for `omnictx kube ...` (tests and
+// internal callers): identical to runKubeWith with the picker disabled.
+func runKube(args []string, stdout, stderr io.Writer) int {
+	return runKubeWith(args, stdout, stderr, nil)
+}
+
+// runKubeWith handles `omnictx kube [<context>|list|on|off]`. No argument
+// prints the current context — or, when pick is non-nil (TTY + fzf + no
+// opt-out), runs the fuzzy picker whose selection performs the `kube
+// <context>` switch. The reserved words (contexts with those literal names
 // are not switchable here) come first: `list` prints all contexts with the
-// current one marked, `on`/`off` persist the kube display toggle to omnictx's
+// current one marked (never interactive — it is the stable read-only table),
+// `on`/`off` persist the kube display toggle to omnictx's
 // own config and never touch a kubeconfig (`on` also re-enables omnictx
 // globally, see below). Any other argument validates
 // against the parsed kubeconfigs and then rewrites current-context via
 // kube.WriteContext. That switch is the only code path in omnictx that writes
 // to a file it does not own — render mode never does.
-func runKube(args []string, stdout, stderr io.Writer) int {
+func runKubeWith(args []string, stdout, stderr io.Writer, pick pickFunc) int {
 	home, _ := os.UserHomeDir()
 
 	if len(args) == 0 {
+		if pick != nil {
+			if code, done := pickKubeContext(pick, home, stderr); done {
+				return code
+			}
+			// fzf could not be executed despite the activation decision:
+			// degrade to the non-interactive print below.
+		}
 		if ctx := kube.Read(os.LookupEnv, home).Context; ctx != "" {
 			_, _ = fmt.Fprintln(stdout, ctx)
 		}
@@ -516,7 +667,40 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	target := args[0]
+	return switchKubeContext(args[0], home, stderr)
+}
+
+// pickKubeContext runs the interactive branch of bare `kube`: the context
+// names (same dedup and order as `kube list`) go through fzf with the current
+// context in the header, and a selection performs exactly the `kube <context>`
+// switch. Cancel (non-zero fzf exit) writes nothing. done=false only when fzf
+// itself could not be executed — the caller then degrades to the print. With
+// zero contexts there is nothing to pick: fzf is never invoked.
+func pickKubeContext(pick pickFunc, home string, stderr io.Writer) (code int, done bool) {
+	entries := kube.Contexts(os.LookupEnv, home)
+	if len(entries) == 0 {
+		return 0, true
+	}
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	sel, ok, err := pick(names, "current: "+kube.Read(os.LookupEnv, home).Context)
+	if err != nil {
+		return 0, false
+	}
+	if !ok {
+		return 0, true
+	}
+	return switchKubeContext(sel, home, stderr), true
+}
+
+// switchKubeContext is the single `kube <context>` switch path, shared by the
+// typed argument and the interactive picker selection: validate the target
+// against the parsed kubeconfigs (unknown → exit 2), then rewrite
+// current-context (broken target → exit 1). Success is silent — hook-running
+// shells apply it on their next prompt.
+func switchKubeContext(target, home string, stderr io.Writer) int {
 	entries := kube.Contexts(os.LookupEnv, home)
 	names := make([]string, len(entries))
 	found := false
@@ -544,20 +728,43 @@ func runKube(args []string, stdout, stderr io.Writer) int {
 
 const namespaceUsage = "usage: omnictx ns [<name>|list]"
 
-// runNamespace handles `omnictx ns [<name>|list]` (alias: `namespace`). No
-// argument prints the active context's namespace (empty prints nothing). One
+// nsFetchFunc obtains the cluster's namespace list for the interactive
+// bare-`ns` branch; kubectlNamespaces is the real implementation, tests
+// inject fakes.
+type nsFetchFunc func(stderr io.Writer) ([]string, error)
+
+// runNamespace is the non-interactive entry point for `omnictx ns ...` (tests
+// and internal callers): identical to runNamespaceWith with the picker
+// disabled — kubectl is then never invoked outside `ns list`.
+func runNamespace(args []string, stdout, stderr io.Writer) int {
+	return runNamespaceWith(args, stdout, stderr, nil, kubectlNamespaces)
+}
+
+// runNamespaceWith handles `omnictx ns [<name>|list]` (alias: `namespace`). No
+// argument prints the active context's namespace (empty prints nothing) — or,
+// when pick is non-nil (TTY + fzf + no opt-out), runs the fuzzy picker over
+// the kubectl-sourced namespace list, whose selection performs the `ns <name>`
+// switch. One
 // argument switches the namespace of the active kube-context by rewriting its
 // entry in the kubeconfig — the second omnictx path that writes to a file it
 // does not own, and only on an explicit user command. The name is validated as
 // a DNS-1123 label first (invalid → exit 2, no write); kubeconfig-state
 // problems (no active context, context not defined, unlocatable/broken) fail
 // loudly with exit 1. `list` is a subcommand word, never a switch target: it
-// queries the cluster via kubectl (see runNamespaceList) — render mode stays
-// strictly offline and shares no code with that path.
-func runNamespace(args []string, stdout, stderr io.Writer) int {
+// queries the cluster via kubectl (see runNamespaceList) and is never
+// interactive — the stable read-only table in every environment.
+func runNamespaceWith(args []string, stdout, stderr io.Writer, pick pickFunc, fetch nsFetchFunc) int {
 	home, _ := os.UserHomeDir()
 
 	if len(args) == 0 {
+		if pick != nil {
+			if code, done := pickNamespace(pick, fetch, home, stderr); done {
+				return code
+			}
+			// kubectl trouble (already warned on stderr) or an fzf exec
+			// failure: degrade to the offline print below — bare `ns` keeps
+			// its always-exit-0 contract.
+		}
 		if ns := kube.Read(os.LookupEnv, home).Namespace; ns != "" {
 			_, _ = fmt.Fprintln(stdout, ns)
 		}
@@ -568,10 +775,49 @@ func runNamespace(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	name := args[0]
-	if name == "list" {
+	if args[0] == "list" {
 		return runNamespaceList(stdout, stderr, home)
 	}
+	return switchNamespace(args[0], home, stderr)
+}
+
+// pickNamespace runs the interactive branch of bare `ns`: the namespace list
+// is fetched from the cluster (the same kubectl invocation as `ns list`),
+// piped through fzf with the active namespace (or `default`) in the header,
+// and a selection performs exactly the `ns <name>` switch. Cancel writes
+// nothing. done=false degrades to the offline print: unlike `ns list`, bare
+// `ns` never fails over cluster trouble — kubectl missing or failing warns on
+// stderr, and an fzf exec failure falls back silently.
+func pickNamespace(pick pickFunc, fetch nsFetchFunc, home string, stderr io.Writer) (code int, done bool) {
+	names, err := fetch(stderr)
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			_, _ = fmt.Fprintln(stderr, "omnictx: warning: the namespace picker needs kubectl on PATH to query the cluster, and kubectl was not found")
+		} else {
+			_, _ = fmt.Fprintf(stderr, "omnictx: warning: kubectl get namespaces failed: %v\n", err)
+		}
+		return 0, false
+	}
+	current := kube.Read(os.LookupEnv, home).Namespace
+	if current == "" {
+		// Kubernetes' effective default when the context sets no namespace.
+		current = "default"
+	}
+	sel, ok, err := pick(names, "current: "+current)
+	if err != nil {
+		return 0, false
+	}
+	if !ok {
+		return 0, true
+	}
+	return switchNamespace(sel, home, stderr), true
+}
+
+// switchNamespace is the single `ns <name>` switch path, shared by the typed
+// argument and the interactive picker selection: DNS-1123 validation (invalid
+// → exit 2, no write), then the kubeconfig rewrite (state problems → exit 1).
+// Success is silent — hook-running shells apply it on their next prompt.
+func switchNamespace(name, home string, stderr io.Writer) int {
 	if !kube.ValidNamespace(name) {
 		_, _ = fmt.Fprintf(stderr, "omnictx: invalid namespace %q (must be a DNS-1123 label)\n%s\n", name, namespaceUsage)
 		return 2
@@ -583,21 +829,43 @@ func runNamespace(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runNamespaceList handles `omnictx ns list` — the ONLY online code path in
-// the binary: the namespace list lives in the cluster, so it shells out to
-// kubectl (time-bounded by --request-timeout so a dead VPN fails in seconds).
-// Render mode never reaches this code and stays strictly offline. The result
-// is a CURRENT/NAME table marking the active context's namespace as resolved
-// by the offline kube.Read (`default` when the context sets none). Failures
-// are environment problems, not usage errors: kubectl missing from PATH or
-// exiting non-zero → its stderr passes through with an omnictx line, exit 1.
-// This path never writes any file.
-func runNamespaceList(stdout, stderr io.Writer, home string) int {
+// kubectlNamespaces is the binary's only bridge to the cluster: `kubectl get
+// namespaces -o name`, time-bounded by --request-timeout so a dead VPN fails
+// in seconds, kubectl's stderr passed through. It has exactly two callers —
+// `ns list` and the interactive bare-`ns` picker; render mode and every other
+// subcommand stay strictly offline. `-o name` prints one `namespace/<name>`
+// per line; anything else is skipped. Never writes any file.
+func kubectlNamespaces(stderr io.Writer) ([]string, error) {
 	cmd := exec.Command("kubectl", "get", "namespaces", "-o", "name", "--request-timeout=10s")
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+
+	var names []string
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		name := strings.TrimPrefix(strings.TrimSpace(line), "namespace/")
+		if name == "" || name == strings.TrimSpace(line) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// runNamespaceList handles `omnictx ns list`: the namespace list lives in the
+// cluster, so it goes through kubectlNamespaces. The result
+// is a CURRENT/NAME table marking the active context's namespace as resolved
+// by the offline kube.Read (`default` when the context sets none). Failures
+// are environment problems, not usage errors: kubectl missing from PATH or
+// exiting non-zero → its stderr passes through with an omnictx line, exit 1 —
+// here the listing IS the command, so unlike bare `ns` it fails loudly.
+// This path never writes any file.
+func runNamespaceList(stdout, stderr io.Writer, home string) int {
+	names, err := kubectlNamespaces(stderr)
+	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			_, _ = fmt.Fprintln(stderr, "omnictx: ns list needs kubectl on PATH to query the cluster, and kubectl was not found")
 			return 1
@@ -613,12 +881,7 @@ func runNamespaceList(stdout, stderr io.Writer, home string) int {
 	}
 
 	var rows [][]string
-	for line := range strings.SplitSeq(out.String(), "\n") {
-		// `-o name` prints one `namespace/<name>` per line; skip anything else.
-		name := strings.TrimPrefix(strings.TrimSpace(line), "namespace/")
-		if name == "" || name == strings.TrimSpace(line) {
-			continue
-		}
+	for _, name := range names {
 		marker := ""
 		if name == current {
 			marker = "*"

@@ -1,10 +1,6 @@
-# aws-region-cli
+# aws-region-cli — delta for promote-provider-commands
 
-## Purpose
-
-The `omnictx aws region` subcommand (with `omnictx cloud aws region` as an accepted alias): persist an AWS region override (`aws_region:` in the omnictx config), clear it with `auto`, or print the effective region with no argument. Validation is offline (format-only); the override is independent of the active profile and never touches the display toggles.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Persist a region override via `omnictx aws region <region>`
 The CLI SHALL provide `omnictx aws region <region>` — with `omnictx cloud aws
