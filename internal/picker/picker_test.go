@@ -2,6 +2,7 @@ package picker
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,39 @@ func TestDecide(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := Decide(tt.tty, tt.fzf, tt.ignoreFzf); got != tt.want {
 				t.Errorf("Decide(%v, %v, %q) = %v, want %v", tt.tty, tt.fzf, tt.ignoreFzf, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCurrentFirst pins the default-selection contract of the bare commands:
+// the current entity leads the fzf item list (Enter with no query re-selects
+// it), everything else keeps its list order, an absent/empty current changes
+// nothing, and the input slice is never mutated (the list tables share it).
+func TestCurrentFirst(t *testing.T) {
+	tests := []struct {
+		name    string
+		items   []string
+		current string
+		want    []string
+	}{
+		{"current already first", []string{"a", "b", "c"}, "a", []string{"a", "b", "c"}},
+		{"current in the middle", []string{"a", "b", "c"}, "b", []string{"b", "a", "c"}},
+		{"current last", []string{"a", "b", "c"}, "c", []string{"c", "a", "b"}},
+		{"current absent", []string{"a", "b", "c"}, "x", []string{"a", "b", "c"}},
+		{"empty current", []string{"a", "b", "c"}, "", []string{"a", "b", "c"}},
+		{"empty items", nil, "a", nil},
+		{"single item", []string{"a"}, "a", []string{"a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := append([]string(nil), tt.items...)
+			got := CurrentFirst(tt.items, tt.current)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("CurrentFirst(%v, %q) = %v, want %v", orig, tt.current, got, tt.want)
+			}
+			if strings.Join(tt.items, ",") != strings.Join(orig, ",") {
+				t.Errorf("CurrentFirst mutated its input: %v, want %v", tt.items, orig)
 			}
 		})
 	}
