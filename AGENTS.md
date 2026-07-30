@@ -96,7 +96,8 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   current / list all / toggle the kube segment via config key `kube:`; the bare
   form becomes an fzf fuzzy pick when stdout is a TTY, `fzf` is on PATH, and
   `OMNICTX_IGNORE_FZF` is empty (any non-empty value opts out, mirroring
-  KUBECTX_IGNORE_FZF): the context names — same dedup/order as `list` — go to
+  KUBECTX_IGNORE_FZF): the context names — same dedup as `list`, current context
+  moved first so Enter with no query keeps it — go to
   fzf with the current context in the header, a selection performs exactly the
   `kube <context>` switch, cancel writes nothing and exits 0, an fzf exec
   failure degrades to the print; `list` stays the read-only table everywhere;
@@ -148,7 +149,13 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   the thin `Run` fzf shell-out (items on stdin one per line, `--header`, stdout
   captured/trimmed, stderr inherited; non-zero exit = cancel, exec failure =
   the caller degrades to its non-interactive print; empty items never invoke
-  fzf). The decision inputs are gathered at the dispatch edge in main.go and
+  fzf). Every bare-command arm passes its items through `CurrentFirst` before
+  Run: the active entity moves to the head of the list (rest keeps the
+  list-table order, input never mutated) because fzf highlights the first
+  stdin line by default — Enter with no query then re-selects the current
+  entity instead of whatever the sorted list put first, so a pick without an
+  explicit choice never changes state.
+  The decision inputs are gathered at the dispatch edge in main.go and
   injected into runKube/runNamespace as a pick function (nil =
   non-interactive), keeping those functions deterministic over parameters.
 - internal/render — format, ANSI colors, bash (\[ \]) / zsh (%{ %}) escaping; the
@@ -191,7 +198,9 @@ strictly, warn on stderr, and fail loudly with non-zero exit codes.
   aws.Directive pin table (vault / manual pin / hook-owned / cleared); hook
   three-line contract incl. disabled and broken-config degradation; snippet
   directive application (export+marker, unset both, manual value untouched);
-  the picker Decide table (TTY × fzf × opt-out) and the interactive bare
+  the picker Decide table (TTY × fzf × opt-out), the CurrentFirst reorder
+  (current first/middle/last/absent, no input mutation — and each interactive
+  arm feeds fzf the current entity first) and the interactive bare
   kube/ns arms with an injected pick/fetch (selection reuses the switch path,
   cancel and fzf-error write nothing, kubectl failure warns and degrades with
   exit 0, the non-interactive value keeps the print byte-identical); the

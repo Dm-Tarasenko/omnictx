@@ -21,6 +21,30 @@ func Decide(stdoutIsTTY, fzfOnPath bool, ignoreFzf string) bool {
 	return stdoutIsTTY && fzfOnPath && ignoreFzf == ""
 }
 
+// CurrentFirst returns items with current moved to the front, the rest keeping
+// their order. fzf highlights the first stdin line by default, so the bare
+// commands pass their item list through this before Run: Enter with no query
+// then re-selects the active entity instead of whatever the list order happened
+// to put first — a pick without an explicit choice never changes state. An
+// absent (or empty) current leaves the order untouched. The input slice is
+// never mutated — the same slice backs the read-only list tables.
+func CurrentFirst(items []string, current string) []string {
+	for i, it := range items {
+		if it != current {
+			continue
+		}
+		if i == 0 {
+			return items
+		}
+		out := make([]string, 0, len(items))
+		out = append(out, current)
+		out = append(out, items[:i]...)
+		out = append(out, items[i+1:]...)
+		return out
+	}
+	return items
+}
+
 // Run pipes items (one per line) to `fzf --header <header>` and returns the
 // user's selection. fzf draws its UI through the inherited stderr; stdout is
 // captured and trimmed to the selected line. ok=false with a nil error means

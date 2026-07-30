@@ -669,6 +669,20 @@ func TestRunKubeInteractivePick(t *testing.T) {
 		}
 	})
 
+	t.Run("current context leads the item list", func(t *testing.T) {
+		// With kind-2 current, fzf's default highlight (the first stdin line)
+		// must be kind-2: Enter with no query keeps the active context.
+		kubeTestConfig(t, strings.Replace(kindKubeconfig, "current-context: kind-1", "current-context: kind-2", 1))
+		p := &pickRecorder{ok: false}
+		var stdout, stderr strings.Builder
+		if code := runKubeWith(nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if got := strings.Join(p.items, ","); got != "kind-2,kind-1" {
+			t.Errorf("picker items = %q, want the current context first", got)
+		}
+	})
+
 	t.Run("cancel writes nothing", func(t *testing.T) {
 		path := kubeTestConfig(t, kindKubeconfig)
 		var stdout, stderr strings.Builder
@@ -778,8 +792,8 @@ func TestRunNamespaceInteractivePick(t *testing.T) {
 		if stdout.String() != "" {
 			t.Errorf("switch success must be silent, got %q", stdout.String())
 		}
-		if got := strings.Join(p.items, ","); got != "default,payments,staging" {
-			t.Errorf("picker items = %q, want the fetched namespaces", got)
+		if got := strings.Join(p.items, ","); got != "payments,default,staging" {
+			t.Errorf("picker items = %q, want the fetched namespaces with the active one first", got)
 		}
 		if !strings.Contains(p.header, "payments") {
 			t.Errorf("header %q should name the active namespace", p.header)
@@ -993,6 +1007,24 @@ func TestRunProviderInteractivePick(t *testing.T) {
 		}
 		if !strings.Contains(p.header, "default") {
 			t.Errorf("header %q should name the current account", p.header)
+		}
+	})
+
+	t.Run("current account leads the item list", func(t *testing.T) {
+		// With `work` active, fzf's default highlight (the first stdin line)
+		// must be `work`: Enter with no query keeps the active account.
+		dir := gcloudUseEnv(t)
+		cloudTestConfig(t)
+		if err := os.WriteFile(filepath.Join(dir, "active_config"), []byte("work"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p := &pickRecorder{ok: false}
+		var stdout, stderr strings.Builder
+		if code := runProvider("gcp", nil, &stdout, &stderr, p.pick); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if got := strings.Join(p.items, ","); got != "work,default" {
+			t.Errorf("picker items = %q, want the current account first", got)
 		}
 	})
 

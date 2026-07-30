@@ -500,7 +500,7 @@ func runProvider(provider string, args []string, stdout, stderr io.Writer, pick 
 		names := providerAccountNames(provider, home)
 		current := providerCurrentAccount(provider, home)
 		if pick != nil && len(names) > 0 {
-			sel, ok, err := pick(names, "current: "+current)
+			sel, ok, err := pick(picker.CurrentFirst(names, current), "current: "+current)
 			if err == nil {
 				if !ok {
 					return 0
@@ -671,8 +671,9 @@ func runKubeWith(args []string, stdout, stderr io.Writer, pick pickFunc) int {
 }
 
 // pickKubeContext runs the interactive branch of bare `kube`: the context
-// names (same dedup and order as `kube list`) go through fzf with the current
-// context in the header, and a selection performs exactly the `kube <context>`
+// names (same dedup as `kube list`, the current context moved first so Enter
+// with no query keeps it) go through fzf with the current context in the
+// header, and a selection performs exactly the `kube <context>`
 // switch. Cancel (non-zero fzf exit) writes nothing. done=false only when fzf
 // itself could not be executed — the caller then degrades to the print. With
 // zero contexts there is nothing to pick: fzf is never invoked.
@@ -685,7 +686,8 @@ func pickKubeContext(pick pickFunc, home string, stderr io.Writer) (code int, do
 	for i, e := range entries {
 		names[i] = e.Name
 	}
-	sel, ok, err := pick(names, "current: "+kube.Read(os.LookupEnv, home).Context)
+	current := kube.Read(os.LookupEnv, home).Context
+	sel, ok, err := pick(picker.CurrentFirst(names, current), "current: "+current)
 	if err != nil {
 		return 0, false
 	}
@@ -783,7 +785,8 @@ func runNamespaceWith(args []string, stdout, stderr io.Writer, pick pickFunc, fe
 
 // pickNamespace runs the interactive branch of bare `ns`: the namespace list
 // is fetched from the cluster (the same kubectl invocation as `ns list`),
-// piped through fzf with the active namespace (or `default`) in the header,
+// piped through fzf — active namespace first, so Enter with no query keeps
+// it — with the active namespace (or `default`) in the header,
 // and a selection performs exactly the `ns <name>` switch. Cancel writes
 // nothing. done=false degrades to the offline print: unlike `ns list`, bare
 // `ns` never fails over cluster trouble — kubectl missing or failing warns on
@@ -803,7 +806,7 @@ func pickNamespace(pick pickFunc, fetch nsFetchFunc, home string, stderr io.Writ
 		// Kubernetes' effective default when the context sets no namespace.
 		current = "default"
 	}
-	sel, ok, err := pick(names, "current: "+current)
+	sel, ok, err := pick(picker.CurrentFirst(names, current), "current: "+current)
 	if err != nil {
 		return 0, false
 	}
